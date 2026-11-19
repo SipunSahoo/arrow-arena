@@ -498,14 +498,20 @@ function spawnArrow(f, ang, o) {
   });
 }
 
-// Full-draw shockwave: a forward wave and a body ring in the arrow type colour, plus that type's own burst.
+// a short vibration on phones that support it (Android); silently does nothing elsewhere
+function buzz(ms) { try { if (touchMode && navigator.vibrate) navigator.vibrate(ms); } catch (e) { /* not allowed */ } }
+
+// Full-draw shockwave: a flash cone, wave fronts and a body ring in the arrow type colour, plus that type's own burst.
 function shockwave(f) {
   const a = f.face, c = Math.cos(a), sn = Math.sin(a), tx = f.x + c * (f.r + 16), ty = f.y + sn * (f.r + 16);
-  const col = f.rage > 0 ? '#ff4d4d' : f.awaken > 0 ? '#ffc400' : WEAPONS[f.weapon].col;
-  ring(tx, ty, 6, 100, 0.36, col, 9, [a - 0.9, a + 0.9]);
-  ring(tx, ty, 6, 70, 0.3, col, 4, [a - 0.7, a + 0.7]);
-  ring(tx, ty, 4, 46, 0.22, '#ffffff', 3, [a - 0.6, a + 0.6]);
-  ring(f.x, f.y, f.r, f.r + 34, 0.25, col, 3);
+  const col = f.rage > 0 ? '#ff4d4d' : f.awaken > 0 ? '#ffc400' : f.weapon === 'classic' ? '#ffffff' : WEAPONS[f.weapon].col;
+  // a filled flash cone, then three expanding wave fronts, then a ring around the archer
+  rings.push({ x: tx, y: ty, r0: 10, r1: 150, t: 0, life: 0.32, col, w: 0, arc: [a - 0.75, a + 0.75], fill: true });
+  ring(tx, ty, 8, 170, 0.5, col, 12, [a - 0.95, a + 0.95]);
+  ring(tx, ty, 6, 115, 0.42, col, 6, [a - 0.75, a + 0.75]);
+  ring(tx, ty, 4, 64, 0.3, '#ffffff', 4, [a - 0.6, a + 0.6]);
+  ring(f.x, f.y, f.r, f.r + 50, 0.38, col, 5);
+  if (f === player) buzz(30);
   const burst = (n, cols, spdLo, spdHi, spread, size, life, drift = 0) => {
     for (let i = 0; i < n; i++) {
       const ang = a + rand(-spread, spread), sp = rand(spdLo, spdHi);
@@ -647,7 +653,13 @@ function updateFighter(f, dt, I) {
         f.iframe = Math.max(f.iframe, 0.2); f.drawing = false; f.draw = 0;
       } else if (I.m1 && f.shotCd <= 0) {
         const rate = (fast ? 2 : 1) * (1 + 0.15 * U.draw) * (f.haste > 0 ? 1.4 : 1) * WEAPONS[f.weapon].draw;
+        const wasFull = f.draw >= 1;
         f.drawing = true; f.draw = Math.min(1, f.draw + dt * rate / DRAW_TIME);
+        // the moment the bow is fully drawn: a ping around you and a tiny buzz, so you know to let go
+        if (!wasFull && f.draw >= 1 && f === player) {
+          ring(f.x, f.y, f.r + 4, f.r + 26, 0.25, f.weapon === 'classic' ? '#fff3c4' : WEAPONS[f.weapon].col, 3);
+          buzz(12);
+        }
       } else if (f.drawing && !I.m1) {
         fireBow(f, f.draw); f.drawing = false; f.draw = 0;
       }
@@ -1398,7 +1410,13 @@ function drawWorld() {
   ctx.globalAlpha = 1;
   for (const r of rings) {
     const k = r.t / r.life;
-    ctx.beginPath(); ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * k, r.arc ? r.arc[0] : 0, r.arc ? r.arc[1] : TAU);
+    const rad = r.r0 + (r.r1 - r.r0) * k;
+    if (r.fill) {   // a filled cone (the full-draw flash)
+      ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.arc(r.x, r.y, rad, r.arc[0], r.arc[1]); ctx.closePath();
+      ctx.globalAlpha = 0.35 * (1 - k); ctx.fillStyle = r.col; ctx.fill(); ctx.globalAlpha = 1;
+      continue;
+    }
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, r.arc ? r.arc[0] : 0, r.arc ? r.arc[1] : TAU);
     ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.col; ctx.lineWidth = r.w; ctx.stroke(); ctx.globalAlpha = 1;
   }
   for (const p of particles) {
