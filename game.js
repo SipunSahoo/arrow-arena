@@ -40,6 +40,39 @@ const UPGRADES = [
   { id: 'back', name: 'Back Shot', desc: 'Every bow shot also fires one arrow behind you', max: 1 },
   { id: 'ice', name: 'Frost Tips', desc: 'Fully drawn arrows slow whoever they hit', max: 1 },
 ];
+const UP_COL = { dmg: '#ff6b6b', draw: '#ffb020', speed: '#5ab0ff', hp: '#4ade80', multi: '#f472b6', pierce: '#8fe3ff', range: '#e8d9b0',
+  vamp: '#ef4444', reload: '#c084fc', magnet: '#5eead4', ricochet: '#facc15', regen: '#86efac', back: '#fb923c', ice: '#bfe9ff' };
+// Draws an upgrade's symbol centred on (x, y), about 2*s wide. Drawn in a 20x20 box and scaled.
+function drawUpIcon(g, id, x, y, s, col = UP_COL[id]) {
+  g.save(); g.translate(x, y); g.scale(s / 10, s / 10);
+  g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 2.2; g.lineCap = 'round'; g.lineJoin = 'round';
+  const line = (pts) => { g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.stroke(); };
+  const arrow = (x1, y1, x2, y2, hs = 4) => {
+    line([x1, y1, x2, y2]);
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    g.beginPath(); g.moveTo(x2 + Math.cos(a) * 2, y2 + Math.sin(a) * 2);
+    g.lineTo(x2 - Math.cos(a - 0.5) * hs, y2 - Math.sin(a - 0.5) * hs); g.lineTo(x2 - Math.cos(a + 0.5) * hs, y2 - Math.sin(a + 0.5) * hs); g.closePath(); g.fill();
+  };
+  switch (id) {
+    case 'dmg': g.beginPath(); g.moveTo(9, -9); g.lineTo(-3, -6); g.lineTo(6, 3); g.closePath(); g.fill(); line([-8, 8, 2, -2]); line([-9, -4, -9, 2]); line([-12, -1, -6, -1]); break;
+    case 'draw': g.beginPath(); g.arc(-6, 0, 9, -1.2, 1.2); g.stroke(); line([-2.7, -8.4, -2.7, 8.4]); arrow(-2, 0, 9, 0); line([2, -6, 6, -6]); line([2, 6, 6, 6]); break;
+    case 'speed': line([-9, -7, -2, 0, -9, 7]); line([0, -7, 7, 0, 0, 7]); break;
+    case 'hp': g.beginPath(); g.moveTo(0, 8); g.bezierCurveTo(-13, -1, -6, -12, 0, -4); g.bezierCurveTo(6, -12, 13, -1, 0, 8); g.fill(); break;
+    case 'multi': arrow(-8, 8, 8, -8, 3.5); arrow(-8, 8, 9, 0, 3.5); arrow(-8, 8, 0, -9, 3.5); break;
+    case 'pierce': g.beginPath(); g.arc(1, 0, 5, 0, TAU); g.stroke(); arrow(-10, 0, 9, 0); break;
+    case 'range': arrow(-10, 2, 9, 2); line([-5, -6, -5, -2]); line([0, -6, 0, -2]); line([5, -6, 5, -2]); break;
+    case 'vamp': g.beginPath(); g.moveTo(0, -9); g.bezierCurveTo(4, -3, 8, 1, 7, 4); g.arc(0, 4, 7, 0, Math.PI); g.bezierCurveTo(-8, 1, -4, -3, 0, -9); g.fill(); break;
+    case 'reload': g.beginPath(); g.arc(0, 0, 7, -0.3, 4.4); g.stroke(); arrow(-2.2, -6.6, 2.5, -6.8, 4); line([0, -3, 0, 0, 3, 2]); break;
+    case 'magnet': g.lineWidth = 4; g.beginPath(); g.moveTo(-6, -8); g.lineTo(-6, 0); g.arc(0, 0, 6, Math.PI, 0, true); g.lineTo(6, -8); g.stroke();
+      g.strokeStyle = '#ffffff'; g.beginPath(); g.moveTo(-6, -8); g.lineTo(-6, -5); g.moveTo(6, -8); g.lineTo(6, -5); g.stroke(); break;
+    case 'ricochet': g.lineWidth = 3; line([9, -10, 9, 10]); g.lineWidth = 2.2; line([-9, 7, 6, -1]); arrow(6, -1, -6, -8, 3.5); break;
+    case 'regen': g.beginPath(); g.arc(0, 0, 8, 0.4, TAU - 0.4); g.stroke(); line([0, -4, 0, 4]); line([-4, 0, 4, 0]); break;
+    case 'back': arrow(1, 0, 10, 0, 3.5); arrow(-1, 0, -10, 0, 3.5); g.beginPath(); g.arc(0, 0, 2, 0, TAU); g.fill(); break;
+    case 'ice': for (let i = 0; i < 3; i++) { const a = i * Math.PI / 3, c = Math.cos(a) * 9, n = Math.sin(a) * 9; line([-c, -n, c, n]);
+        for (const sg of [-1, 1]) { const bx = c * 0.6 * sg, by = n * 0.6 * sg, pa = a + Math.PI / 2; line([bx, by, bx + Math.cos(pa) * 2.5 + c * 0.2 * sg, by + Math.sin(pa) * 2.5 + n * 0.2 * sg]); line([bx, by, bx - Math.cos(pa) * 2.5 + c * 0.2 * sg, by - Math.sin(pa) * 2.5 + n * 0.2 * sg]); } } break;
+  }
+  g.restore();
+}
 const freshUpgrades = () => Object.fromEntries(UPGRADES.map(u => [u.id, 0]));
 
 const POWERUPS = {
@@ -103,13 +136,23 @@ const D = () => DIFFICULTY[settings.difficulty];
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1, VIEW = 1, zoom = 1, VS = 1;   // VS = VIEW x zoom, the scale actually drawn
+// UIS: on phones the whole game (arena, HUD, buttons) is drawn this much bigger. W and H are the game's own
+// units (screen pixels / UIS), so every layout rule below stays the same and simply comes out larger.
+let UIS = 1, PHONE = false;
 function resize() {
-  DPR = Math.min(window.devicePixelRatio || 1, 2);
-  W = window.innerWidth; H = window.innerHeight;
-  canvas.width = W * DPR; canvas.height = H * DPR;
-  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-  VIEW = clamp(Math.min(W, H) / 820, 0.5, 1.05); VS = VIEW * zoom;
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  const cw = window.innerWidth, chh = window.innerHeight, m = Math.min(cw, chh);
+  PHONE = m < 500 && window.matchMedia('(pointer: coarse)').matches;
+  UIS = PHONE ? clamp(m / 285, 1.05, 1.35) : 1;
+  W = cw / UIS; H = chh / UIS;
+  canvas.width = Math.round(cw * DPR); canvas.height = Math.round(chh * DPR);
+  canvas.style.width = cw + 'px'; canvas.style.height = chh + 'px';
+  // phones also zoom the arena in: archers were half size before
+  VIEW = PHONE ? clamp(Math.min(W, H) / 420, 0.66, 1) : clamp(Math.min(W, H) / 820, 0.5, 1.05);
+  VS = VIEW * zoom;
 }
+// size factor for the touch controls (in game units)
+const touchK = () => clamp(Math.min(W, H) / 400, 0.8, 1.1);
 window.addEventListener('resize', resize);
 resize();
 
@@ -845,10 +888,18 @@ function refreshPickers() {
 buildPickers(document.getElementById('menuPickers'));
 // top-right controls on phones and tablets
 function switchRect() {
-  const k = clamp(Math.min(W, H) / 480, 0.72, 1), w = 196 * k, h = 60 * k;
+  const k = touchK(), w = 196 * k, h = 60 * k;
   return { x: W - 12 - w, y: 10, w, h, k };
 }
-const swapRect = () => { const r = switchRect(); return { x: r.x, y: r.y + r.h + 8, w: r.w, h: 40 * r.k, k: r.k }; };
+// SWAP sits under the arrow panel; on screens too short for that (it would cover SHIELD) it moves to the top centre
+function swapRect() {
+  const r = switchRect(), rect = { x: r.x, y: r.y + r.h + 8, w: r.w, h: 40 * r.k, k: r.k };
+  const sh = touchButtons().find(b => b.id === 'block');
+  const hitsShield = sh && rect.y + rect.h > sh.y - sh.r && rect.x < sh.x + sh.r && rect.x + rect.w > sh.x - sh.r;
+  if (!hitsShield) return rect;
+  const left = 20 + Math.min(300, W * 0.34), right = r.x - 108;
+  return { ...rect, x: left + Math.max(0, (right - left - rect.w) / 2), y: 10, w: Math.min(rect.w, right - left) };
+}
 const pauseBtn = () => { const r = switchRect(); return { x: r.x - 30, y: r.y + r.h / 2, r: 20 }; };
 const fsBtn = () => { const r = switchRect(); return { x: r.x - 78, y: r.y + r.h / 2, r: 20 }; };
 
@@ -883,7 +934,7 @@ document.addEventListener('pointermove', e => {
   if (e.pointerType !== 'mouse') return;
   touchMode = false;
   if (isLocked()) { mouse.x = clamp(mouse.x + e.movementX, 0, W); mouse.y = clamp(mouse.y + e.movementY, 0, H); }
-  else { mouse.x = e.clientX; mouse.y = e.clientY; }
+  else { mouse.x = e.clientX / UIS; mouse.y = e.clientY / UIS; }
 });
 let clickTaken = false;   // a click that picked a card must not also shoot
 canvas.addEventListener('mousedown', e => {
@@ -912,19 +963,21 @@ const inMoveZone = x => x < W / 2;
 const btnTouches = new Map(); // touch id -> button id
 const btnPressed = new Set();
 function touchButtons() {
-  const k = clamp(Math.min(W, H) / 480, 0.62, 1);
+  const k = touchK();
   const cx = W - 128 * k, cy = H - 105 * k, R = 125 * k;
   const at = (deg, rad, rr) => ({ x: cx + Math.cos(deg * Math.PI / 180) * rad, y: cy + Math.sin(deg * Math.PI / 180) * rad, r: rr * k });
   return [
-    { id: 'dash', label: 'DASH', ...at(185, R + 4 * k, 36) },
-    { id: 'block', label: 'SHIELD', ...at(245, R + 4 * k, 36) },
+    { id: 'dash', label: 'DASH', ...at(175, R + 4 * k, 36) },
+    { id: 'block', label: 'SHIELD', ...at(222, R + 4 * k, 36) },
   ];
 }
+// touches in game units (screen pixels / UIS)
+const scaledTouches = e => [...e.changedTouches].map(t => ({ identifier: t.identifier, clientX: t.clientX / UIS, clientY: t.clientY / UIS }));
 function handleTouchStart(e) {
   e.preventDefault(); touchMode = true;
   const pb = pauseBtn(), fb = fsBtn(), sr = switchRect();
   const btns = touchButtons();
-  for (const t of e.changedTouches) {
+  for (const t of scaledTouches(e)) {
     const tx = t.clientX, ty = t.clientY;
     const oh = offerHit(tx, ty);
     if (running && oh >= 0 && cardTouch.id === null) { Object.assign(cardTouch, { id: t.identifier, idx: oh, sx: tx, sy: ty }); continue; }
@@ -945,7 +998,7 @@ function handleTouchStart(e) {
 }
 function handleTouchMove(e) {
   e.preventDefault();
-  for (const t of e.changedTouches) {
+  for (const t of scaledTouches(e)) {
     if (t.identifier === cardTouch.id && Math.hypot(t.clientX - cardTouch.sx, t.clientY - cardTouch.sy) > 14) {
       // it was a drag, not a tap: hand the thumb to the stick for the zone it started in
       const { sx, sy } = cardTouch; cardTouch.id = null;
@@ -958,7 +1011,7 @@ function handleTouchMove(e) {
 }
 function handleTouchEnd(e) {
   e.preventDefault();
-  for (const t of e.changedTouches) {
+  for (const t of scaledTouches(e)) {
     if (t.identifier === cardTouch.id) { if (offerHit(t.clientX, t.clientY) === cardTouch.idx) pickOffer(cardTouch.idx); cardTouch.id = null; }
     if (t.identifier === joy.id) joy.id = null;
     if (t.identifier === aimStick.id) aimStick.id = null;
@@ -1042,7 +1095,7 @@ function pickOffer(i) {
   if (!offer || !offer.cards[i]) return false;
   const c = offer.cards[i];
   if (c.arrow) giveArrow(player, c.type, c.tier);
-  else { applyUpgrade(player, c.id); popText(player.x, player.y - 46, c.name, '#5eead4', true); }
+  else { applyUpgrade(player, c.id); popText(player.x, player.y - 46, c.name, UP_COL[c.id], true); }
   player.pendingChoices--; offer = null; ensureOffer();
   return true;
 }
@@ -1053,7 +1106,8 @@ function offerLayout() {
   let w, x0, y0, ch;
   if (touchMode) {
     const dash = touchButtons().find(b => b.id === 'dash');
-    const left = W * 0.24, right = Math.min(dash.x - dash.r - 10, W - 12);
+    // a drag that starts on a card becomes the move stick, so the strip may sit over the move zone
+    const left = 12, right = Math.min(dash.x - dash.r - 10, W - 12);
     w = Math.min(460, right - left); x0 = left + (right - left - w) / 2; ch = 42; y0 = H - ch - 10;
   } else {
     w = Math.min(620, W - 360); x0 = (W - w) / 2; ch = 60; y0 = H - 104 - ch;
@@ -1068,11 +1122,15 @@ function offerHit(x, y) {
 function drawOffer() {
   const L = offerLayout(); if (!L) return;
   const keysTxt = ['Z', 'X', 'C'];
-  ctx.textAlign = 'center'; ctx.fillStyle = '#5eead4'; ctx.font = '800 12px system-ui, sans-serif';
+  // the title sits over the cards themselves, shrunk to their width
+  const first = L.cards[0], lastC = L.cards[L.cards.length - 1], mid = (first.x + lastC.x + lastC.w) / 2, span = lastC.x + lastC.w - first.x;
   const more = player.pendingChoices > 1 ? ` · ${player.pendingChoices - 1} more waiting` : '';
-  ctx.fillText(`LEVEL ${offer.level} · PICK ONE${touchMode ? '' : ' (Z X C or click)'}${more}`, W / 2, L.y0 - 7);
+  const title = `LEVEL ${offer.level} · PICK ONE${touchMode ? '' : ' (Z X C or click)'}${more}`;
+  let tz = 12; ctx.font = `800 ${tz}px system-ui, sans-serif`;
+  while (tz > 8 && ctx.measureText(title).width > span) { tz--; ctx.font = `800 ${tz}px system-ui, sans-serif`; }
+  ctx.textAlign = 'center'; ctx.fillStyle = '#5eead4'; ctx.fillText(title, mid, L.y0 - 7);
   L.cards.forEach((k, i) => {
-    const c = k.c, col = c.arrow ? WEAPONS[c.type].col : '#5eead4';
+    const c = k.c, col = c.arrow ? WEAPONS[c.type].col : UP_COL[c.id];
     ctx.fillStyle = '#0b0e14e6'; roundRect(k.x, k.y, k.w, k.h, 9); ctx.fill();
     ctx.strokeStyle = col; ctx.lineWidth = 2; roundRect(k.x, k.y, k.w, k.h, 9); ctx.stroke();
     if (!touchMode) { ctx.textAlign = 'left'; ctx.fillStyle = '#ffb020'; ctx.font = '800 10px system-ui, sans-serif'; ctx.fillText(keysTxt[i], k.x + 6, k.y + 12); }
@@ -1083,13 +1141,18 @@ function drawOffer() {
       const t = `${WEAPONS[c.type].name} ${ROMAN[c.tier]}`;
       fit(t, touchMode ? 11 : 13, k.w - 10); ctx.fillStyle = col; ctx.fillText(t, k.x + k.w / 2, k.y + k.h - 9);
     } else {
+      // the symbol on the left, recognisable without reading
+      const is = Math.min(k.h * 0.32, 15), iw = is * 2 + 10;
+      ctx.beginPath(); ctx.arc(k.x + 6 + is + 1, k.y + k.h / 2, is + 3, 0, TAU); ctx.fillStyle = col + '22'; ctx.fill();
+      drawUpIcon(ctx, c.id, k.x + 6 + is + 1, k.y + k.h / 2, is);
+      const tx = k.x + iw + (k.w - iw) / 2, tw = k.w - iw - 6;
       const head = touchMode ? `${c.name} · ${player.up[c.id]}/${c.max}` : c.name;
-      fit(head, touchMode ? 11 : 13, k.w - 10); ctx.fillStyle = col; ctx.fillText(head, k.x + k.w / 2, k.y + (touchMode ? 16 : 24));
+      fit(head, touchMode ? 11 : 13, tw); ctx.fillStyle = col; ctx.fillText(head, tx, k.y + (touchMode ? 17 : 24));
       ctx.fillStyle = '#c8ced8'; ctx.font = `600 ${touchMode ? 9 : 10}px system-ui, sans-serif`;
-      let d = c.desc; while (d.length > 8 && ctx.measureText(d).width > k.w - 10) d = d.slice(0, -2);
+      let d = c.desc; while (d.length > 8 && ctx.measureText(d).width > tw) d = d.slice(0, -2);
       if (d !== c.desc) d = d.trimEnd() + '…';
-      ctx.fillText(d, k.x + k.w / 2, k.y + (touchMode ? 31 : 40));
-      if (!touchMode) { ctx.fillStyle = '#9aa3b2'; ctx.font = '700 9px system-ui, sans-serif'; ctx.fillText(`${player.up[c.id]} / ${c.max}`, k.x + k.w / 2, k.y + k.h - 5); }
+      ctx.fillText(d, tx, k.y + (touchMode ? 32 : 40));
+      if (!touchMode) { ctx.fillStyle = '#9aa3b2'; ctx.font = '700 9px system-ui, sans-serif'; ctx.fillText(`${player.up[c.id]} / ${c.max}`, tx, k.y + k.h - 5); }
     }
   });
 }
@@ -1432,7 +1495,17 @@ function drawHud() {
     ctx.fillStyle = '#e8ecf3'; ctx.fillText(`${f.kills}`, lx + 140, ly + 33 + i * 17);
   });
 
-  // owned upgrades (desktop only; phones are short on space)
+  // phones: owned upgrades as a row of symbols with counts
+  if (compact) {
+    const owned = UPGRADES.filter(u => player.up[u.id] > 0);
+    owned.forEach((u, i) => {
+      const cx = lx + 12 + (i % 6) * 26, cy = ly + 34 + lb.length * 17 + Math.floor(i / 6) * 26;
+      ctx.beginPath(); ctx.arc(cx, cy, 11, 0, TAU); ctx.fillStyle = '#000000aa'; ctx.fill();
+      drawUpIcon(ctx, u.id, cx, cy, 7);
+      if (player.up[u.id] > 1) { ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 8px system-ui, sans-serif'; ctx.fillText(player.up[u.id], cx + 9, cy + 10); }
+    });
+  }
+  // owned upgrades (desktop: a named list)
   if (!compact) {
     const owned = UPGRADES.filter(u => player.up[u.id] > 0);
     if (owned.length) {
@@ -1441,8 +1514,9 @@ function drawHud() {
       ctx.font = '700 11px system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#9aa3b2';
       ctx.fillText('UPGRADES', lx + 10, oy + 15);
       owned.forEach((u, i) => {
+        drawUpIcon(ctx, u.id, lx + 16, oy + 27 + i * 16, 6);
         ctx.textAlign = 'left'; ctx.fillStyle = '#e8ecf3'; ctx.font = '600 11px system-ui, sans-serif';
-        ctx.fillText(u.name, lx + 10, oy + 31 + i * 16);
+        ctx.fillText(u.name, lx + 28, oy + 31 + i * 16);
         ctx.textAlign = 'right'; ctx.fillStyle = '#5eead4'; ctx.fillText(`×${player.up[u.id]}`, lx + 140, oy + 31 + i * 16);
       });
     }
@@ -1635,7 +1709,7 @@ function drawTouch() {
     if (!offer) ctx.fillText('drag here to move', W * 0.22, H - 60);
   }
   // aim-and-shoot stick: floats under the thumb anywhere in the bottom-right quarter
-  const k = clamp(Math.min(W, H) / 480, 0.62, 1), wcol = WEAPONS[player.weapon].col;
+  const k = touchK(), wcol = WEAPONS[player.weapon].col;
   if (aimStick.id !== null) {
     const R = 60 * k, ax = aimStick.x - aimStick.ox, ay = aimStick.y - aimStick.oy, m = Math.hypot(ax, ay), kk = m > R ? R / m : 1;
     ctx.beginPath(); ctx.arc(aimStick.ox, aimStick.oy, R, 0, TAU); ctx.fillStyle = '#00000055'; ctx.fill();
@@ -1716,7 +1790,7 @@ function frame(now) {
     zoom += (zt - zoom) * (1 - Math.exp(-3 * dt)); VS = VIEW * zoom;
   }
 
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.setTransform(DPR * UIS, 0, 0, DPR * UIS, 0, 0);
   ctx.clearRect(0, 0, W, H);
   if (player) {
     const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
