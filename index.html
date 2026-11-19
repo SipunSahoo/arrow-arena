@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Arrow Arena Prototype</title>
+<style>
+  :root { --bg:#0d0f14; --panel:#161a22ee; --text:#e8ecf3; --muted:#9aa3b2; --accent:#ffb020; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); overflow:hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; touch-action:none;
+    -webkit-user-select:none; user-select:none; }
+  canvas { display:block; position:fixed; inset:0; }
+  #menu { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:radial-gradient(circle at 50% 40%, #1d2433 0%, #0d0f14 70%); z-index:5; padding:16px; box-sizing:border-box; }
+  #menu .box { max-width:520px; width:100%; background:var(--panel); border:1px solid #2a3140;
+    border-radius:16px; padding:24px; box-sizing:border-box; }
+  h1 { margin:0 0 4px; font-size:30px; letter-spacing:1px; }
+  h1 span { color:var(--accent); }
+  .sub { color:var(--muted); margin:0 0 18px; font-size:14px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin-bottom:18px; }
+  td { padding:5px 4px; border-bottom:1px solid #232a37; }
+  td:first-child { color:var(--accent); font-weight:600; white-space:nowrap; width:42%; }
+  button#play { width:100%; padding:14px; font-size:18px; font-weight:700; border:0; border-radius:12px;
+    background:var(--accent); color:#1a1200; cursor:pointer; }
+  .touchnote { color:var(--muted); font-size:13px; margin-top:12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="menu">
+  <div class="box">
+    <h1>ARROW <span>ARENA</span></h1>
+    <p class="sub">Prototype 0.2 · bows only · free-for-all against 6 bots · working title</p>
+    <table>
+      <tr><td>W A S D</td><td>Move</td></tr>
+      <tr><td>Mouse</td><td>Aim</td></tr>
+      <tr><td>Left click (hold, let go)</td><td>Draw the bow and shoot. A full draw flies faster and hits harder</td></tr>
+      <tr><td>Right click / F (hold)</td><td>Shield. Blocks arrows from the front</td></tr>
+      <tr><td>Space</td><td>Dash. You cannot be hit mid-dash</td></tr>
+      <tr><td>1 2 3 4</td><td>Triple Shot · Piercing Arrow (breaks shields) · Arrow Rain (at the mouse) · Blast Arrow</td></tr>
+      <tr><td>G</td><td>Storm Volley, when the gold bar is full</td></tr>
+    </table>
+    <button id="play">PLAY</button>
+    <p class="touchnote">On a phone or iPad: left thumb moves, buttons on the right fight. Hold SHOOT to draw, let go to fire. Aim is automatic.</p>
+  </div>
+</div>
+<script src="game.js"></script>
+</body>
+</html>
