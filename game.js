@@ -12,9 +12,13 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 const ARENA_R = 1200;
 const DRAW_TIME = 0.75;      // seconds to a full draw
-const SHOT_CD = 0.28;
+const SHOT_CD = 0.45;        // gap after every shot, so tapping cannot out-damage full draws
+const EFFECT_CHARGE = 0.5;   // an arrow's type effect (burn, freeze, poison, chain, blast) needs at least half a draw
 const ORB_TARGET = 150;      // loose XP dots kept on the ground
-const MAX_LEVEL = 30;
+const MAX_LEVEL = 20;
+const BASE_R = 22;
+const sizeFor = level => BASE_R + (level - 1) * 1.0;        // level 20 is almost twice as wide: an easier target
+const speedFor = level => 1 - 0.012 * (level - 1);          // and about a quarter slower
 const xpNeed = level => 6 + level * 6;
 
 const UPGRADES = [
@@ -122,6 +126,7 @@ for (let i = 0; i < 20; i++) {
 let fighters = [], arrows = [], stuck = [], particles = [], rings = [], texts = [], feed = [];
 let orbs = [], powerups = [], puTimer = 3, bolts = [], quivers = [], qTimer = 6;
 let hitStop = 0, shake = 0, running = false, paused = false, choosing = false;
+let offer = null;   // the 3 cards for the oldest level-up you have not picked yet
 let player = null;
 const cam = { x: 0, y: 0 };
 
@@ -153,7 +158,7 @@ class Fighter {
       stun: 0, ragdoll: 0, spin: 0, spinV: 0, shotCd: 0, draw: 0, drawing: false, recoil: 0,
       blocking: false, dashT: 0, lock: 0, cd: { dash: 0 },
       awaken: 0, slow: 0, flash: 0, iframe: 1.2, lastHitBy: null, lastHitT: 0, guardBreak: 0,
-      level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0, vision: 0,
+      r: BASE_R, bounty: false, level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0, vision: 0,
       slots: [{ type: 'classic', tier: 1 }], cur: 0, weapon: 'classic', tier: 1,
       burn: 0, burnTick: 0, burnBy: null, poison: 0, poisonStacks: 0, poisonTick: 0, poisonBy: null, frozen: 0,
     });
@@ -189,7 +194,7 @@ function gainXp(f, v) {
   if (f.level >= MAX_LEVEL) return;
   f.xp += v; f.xpTotal += v;
   while (f.level < MAX_LEVEL && f.xp >= xpNeed(f.level)) {
-    f.xp -= xpNeed(f.level); f.level++;
+    f.xp -= xpNeed(f.level); f.level++; f.r = sizeFor(f.level);
     ring(f.x, f.y, 10, 70, 0.4, '#5eead4', 4);
     popText(f.x, f.y - 46, `LEVEL ${f.level}`, '#5eead4', true);
     if (f.isBot) {
@@ -322,7 +327,7 @@ function updatePickups(dt) {
 function applyHit(a, t, o) {
   if (t.dead || t.iframe > 0) return false;
   const dir = o.dir !== undefined ? o.dir : Math.atan2(t.y - a.y, t.x - a.x);
-  const mult = (1 + 0.15 * a.up.dmg) * (a.rage > 0 ? 2 : 1) * (a.awaken > 0 ? 1.3 : 1);
+  const mult = (1 + 0.15 * a.up.dmg) * (a.rage > 0 ? 2 : 1) * (a.awaken > 0 ? 1.3 : 1) * slayerBonus(a, t);
   let dmg = o.dmg * mult * (a.isBot ? D().dmg : 1), kb = o.kb || 0, stun = o.stun || 0, rag = o.ragdoll || 0;
   let col = a.rage > 0 ? '#ff7a7a' : '#ffd27a';
   let blocked = false;
@@ -365,7 +370,7 @@ function applyHit(a, t, o) {
 // Damage from burning or poison: no knockback, no flash.
 function dotHit(t, src, amount, col) {
   if (t.dead) return;
-  let dmg = amount * (src ? (1 + 0.15 * src.up.dmg) * (src.isBot ? D().dmg : 1) : 1);
+  let dmg = amount * (src ? (1 + 0.15 * src.up.dmg) * (src.isBot ? D().dmg : 1) * slayerBonus(src, t) : 1);
   if (t.bubble > 0) { const soak = Math.min(t.bubble, dmg); t.bubble -= soak; dmg -= soak; }
   if (dmg <= 0) return;
   t.hp -= dmg;
@@ -377,6 +382,7 @@ function dotHit(t, src, amount, col) {
 // What an arrow's type does after it lands on someone.
 function weaponOnHit(a, t) {
   const src = a.owner;
+  if (a.charge < EFFECT_CHARGE) return;
   if (a.weapon === 'fire') { t.burn = 3; t.burnBy = src; t.burnTier = a.tier; t.burnTick = Math.min(t.burnTick || 0.5, 0.5); }
   if (a.weapon === 'frost') {
     t.slow = Math.max(t.slow, 1.3);
@@ -398,6 +404,7 @@ function weaponOnHit(a, t) {
 
 // The Blast arrow type: a small explosion wherever it lands.
 function miniBlast(x, y, owner, charge, skip, tier = 1) {
+  if (charge < EFFECT_CHARGE) { sparks(x, y, '#ff8a3d', 5, 140); return; }   // a quick shot only fizzles
   const big = charge >= 0.98, R = big ? 105 : 70;
   ring(x, y, 6, R, 0.3, '#ff8a3d', big ? 7 : 5);
   sparks(x, y, '#ff8a3d', big ? 22 : 12, big ? 420 : 300);
@@ -406,6 +413,15 @@ function miniBlast(x, y, owner, charge, skip, tier = 1) {
     if (Math.hypot(t.x - x, t.y - y) < R + t.r) applyHit(owner, t, { dmg: (4 + 7 * charge) * tierMult(tier), kb: big ? 600 : 300, stun: 0.2, ragdoll: big ? 0.45 : 0, dir: Math.atan2(t.y - y, t.x - x), unblockable: true });
   }
   if (big && Math.hypot(player.x - x, player.y - y) < 600) shake = Math.max(shake, 7);
+}
+
+// Giant slayer: +5% damage for every level the target is above you, up to +60%.
+const slayerBonus = (a, t) => 1 + 0.05 * clamp(t.level - a.level, 0, 12);
+// Bounty: a fighter far ahead of everyone (level 6+, 3+ levels clear) is marked and hunted.
+function updateBounty() {
+  const alive = fighters.filter(f => !f.dead).sort((x, y) => y.level - x.level);
+  for (const f of fighters) f.bounty = false;
+  if (alive.length > 1 && alive[0].level >= 6 && alive[0].level - alive[1].level >= 3) alive[0].bounty = true;
 }
 
 function killFighter(t, a) {
@@ -417,7 +433,9 @@ function killFighter(t, a) {
   if (feed.length > 5) feed.pop();
   ring(t.x, t.y, 10, 110, 0.5, '#ffffff', 5);
   sparks(t.x, t.y, t.color, 24, 380);
-  dropOrbs(t.x, t.y, 4 + Math.floor(t.xpTotal * 0.5), true);   // half their XP spills on the ground
+  // half their XP spills on the ground; a bounty spills three quarters, and the hunter is healed in full
+  dropOrbs(t.x, t.y, 4 + Math.floor(t.xpTotal * (t.bounty ? 0.75 : 0.5)), true);
+  if (t.bounty && killer) { killer.hp = killer.maxHp; popText(t.x, t.y - 60, 'BOUNTY CLAIMED', '#ffc400', true); ring(t.x, t.y, 20, 200, 0.6, '#ffc400', 7); }
   for (const sl of t.slots) if (sl.type !== 'classic') quivers.push({ x: t.x + rand(-40, 40), y: t.y + rand(-40, 40), type: sl.type, tier: sl.tier, t: 0, life: DROP_LIFE });
   if (t === player || killer === player) shake = Math.max(shake, 14);
 }
@@ -435,10 +453,10 @@ function spawnArrow(f, ang, o) {
 }
 
 function fireBow(f, charge) {
-  const c = clamp(charge, 0.15, 1), full = c >= 0.98, U = f.up, Wp = WEAPONS[f.weapon];
+  const c = clamp(charge, 0.2, 1), full = c >= 0.98, U = f.up, Wp = WEAPONS[f.weapon];
   const base = {
     speed: (650 + 800 * c) * (1 + 0.2 * U.range) * Wp.speed, life: 0.85 * (1 + 0.15 * U.range),
-    dmg: (5 + 11 * c) * Wp.dmg * tierMult(f.tier), tier: f.tier, kb: full ? 320 : 90 * c, stun: full ? 0.3 : 0.12, pierceLeft: U.pierce,
+    dmg: (3 + 13 * Math.pow(c, 1.5)) * Wp.dmg * tierMult(f.tier), tier: f.tier, kb: full ? 320 : 90 * c, stun: full ? 0.3 : 0.12, pierceLeft: U.pierce,
     slow: full && U.ice ? 1.5 : 0, weapon: f.weapon, charge: c,
     bounces: f.weapon === 'explosive' ? 0 : U.ricochet,
     pierce: f.weapon === 'piercing', guardBreak: f.weapon === 'piercing' && full,
@@ -504,7 +522,7 @@ function updateFighter(f, dt, I) {
     f.deathT -= dt;
     f.vx *= Math.exp(-3 * dt); f.vy *= Math.exp(-3 * dt);
     moveBody(f, dt);
-    if (f.deathT <= 0) f.spawn();
+    if (f.deathT <= 0) { f.spawn(); if (f === player) offer = null; }
     return;
   }
   if (U.regen) f.hp = Math.min(f.maxHp, f.hp + 1.5 * U.regen * dt);
@@ -535,7 +553,7 @@ function updateFighter(f, dt, I) {
   if (f.canAct) {
     let mx = I.mx || 0, my = I.my || 0;
     const m = Math.hypot(mx, my); if (m > 1) { mx /= m; my /= m; }
-    let sp = 240 * (fast ? 1.2 : 1) * (1 + 0.08 * U.speed) * (f.haste > 0 ? 1.35 : 1);
+    let sp = 240 * (fast ? 1.2 : 1) * (1 + 0.08 * U.speed) * (f.haste > 0 ? 1.35 : 1) * speedFor(f.level);
     if (f.blocking) sp = 95; else if (f.drawing) sp *= 0.6;
     if (f.slow > 0) sp *= 0.55;
     const k = 1 - Math.exp(-14 * dt);
@@ -663,7 +681,7 @@ function botIntent(f, dt) {
     for (const t of fighters) {
       if (t === f || t.dead) continue;
       // on easier settings bots pick on each other more than on you
-      const d = dist(f, t) * rand(0.7, 1.3) * (t === player ? DF.playerBias : 1);
+      const d = dist(f, t) * rand(0.7, 1.3) * (t === player ? DF.playerBias : 1) * (t.bounty ? 0.45 : 1);
       if (d < bd) { bd = d; best = t; }
     }
     ai.target = best; ai.retarget = rand(3, 6); ai.aimErr = rand(-DF.aim, DF.aim);
@@ -816,7 +834,7 @@ function toggleFullscreen() {
 
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
-  if (choosing && ['1', '2', '3'].includes(k)) { pickCard(Number(k) - 1); e.preventDefault(); return; }
+  if (running && !paused && offer && ['z', 'x', 'c'].includes(k)) { pickOffer(['z', 'x', 'c'].indexOf(k)); e.preventDefault(); return; }
   if (!keys.has(k)) pressed.add(k);
   keys.add(k);
   if ([' ', 'tab'].includes(k)) e.preventDefault();
@@ -830,12 +848,14 @@ document.addEventListener('pointermove', e => {
   if (isLocked()) { mouse.x = clamp(mouse.x + e.movementX, 0, W); mouse.y = clamp(mouse.y + e.movementY, 0, H); }
   else { mouse.x = e.clientX; mouse.y = e.clientY; }
 });
+let clickTaken = false;   // a click that picked a card must not also shoot
 canvas.addEventListener('mousedown', e => {
   if (running && !choosing && !paused && !touchMode && canLock && !isLocked() && !wasLocked) lockPointer();
+  if (e.button === 0 && running && !paused && !touchMode && offerHit(mouse.x, mouse.y) >= 0) { pickOffer(offerHit(mouse.x, mouse.y)); clickTaken = true; return; }
   if (e.button === 0) mouse.l = true;
   if (e.button === 2) mouse.r = true;
 });
-window.addEventListener('mouseup', e => { if (e.button === 0) mouse.l = false; if (e.button === 2) mouse.r = false; });
+window.addEventListener('mouseup', e => { if (e.button === 0) { mouse.l = false; clickTaken = false; } if (e.button === 2) mouse.r = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 // Touch layout, by screen quarter:
@@ -848,6 +868,7 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 const joy = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
 const aimStick = { id: null, ox: 0, oy: 0, x: 0, y: 0, lockAng: 0, pendingT: 0 };
 const AIM_DEADZONE = 18;
+let aimedOnce = false;   // the shoot-zone hint goes away after the first aim
 const inShootZone = (x, y) => x >= W / 2 && y >= H / 2;
 const inMoveZone = x => x < W / 2;
 const btnTouches = new Map(); // touch id -> button id
@@ -867,6 +888,8 @@ function handleTouchStart(e) {
   const btns = touchButtons();
   for (const t of e.changedTouches) {
     const tx = t.clientX, ty = t.clientY;
+    const oh = offerHit(tx, ty);
+    if (running && oh >= 0) { pickOffer(oh); continue; }
     if (running && Math.hypot(tx - pb.x, ty - pb.y) < pb.r + 12) { setPaused(true); return; }
     if (canFullscreen && Math.hypot(tx - fb.x, ty - fb.y) < fb.r + 12) { toggleFullscreen(); continue; }
     if (tx >= sr.x - 6 && tx <= sr.x + sr.w + 6 && ty >= sr.y - 6 && ty <= sr.y + sr.h + 6) { btnPressed.add('switch'); continue; }
@@ -910,14 +933,14 @@ function playerIntent(dt) {
       const dx = joy.x - joy.ox, dy = joy.y - joy.oy, m = Math.hypot(dx, dy);
       if (m > 8) { I.mx = dx / Math.max(m, 55); I.my = dy / Math.max(m, 55); }
     }
-    // facing: the aim stick owns it while it is held or the bow is drawn; otherwise you face where you walk
+    // facing: only the aim stick turns the bow
     const aiming = aimStick.id !== null;
     if (aiming) {
       const ax = aimStick.x - aimStick.ox, ay = aimStick.y - aimStick.oy;
-      if (Math.hypot(ax, ay) > AIM_DEADZONE) aimStick.lockAng = Math.atan2(ay, ax);
+      if (Math.hypot(ax, ay) > AIM_DEADZONE) { aimStick.lockAng = Math.atan2(ay, ax); aimedOnce = true; }
       I.aim = aimStick.lockAng;
-    } else if (player.drawing) I.aim = aimStick.lockAng;   // the release frame: the shot keeps its aim
-    else if (I.mx || I.my) I.aim = Math.atan2(I.my, I.mx);
+    }
+    // with the right thumb up, the bow keeps pointing where it was last aimed; the move stick never turns it
     // hold to draw; a tap shorter than one frame still starts a draw, then the release fires it
     if (aimStick.pendingT > 0) aimStick.pendingT = player.drawing ? 0 : aimStick.pendingT - dt;
     I.m1 = aiming || aimStick.pendingT > 0;
@@ -956,45 +979,68 @@ function arrowOffer(level) {
   }
   return { arrow: true, type: rollType(player.slots.map(sl => sl.type)), tier: Math.max(rollTier(level), level >= 9 ? 2 : 1) };
 }
-function openChoice() {
+function buildOffer() {
   const lvl = player.level - player.pendingChoices + 1;
-  const opts = availableUpgrades(player);
-  cardChoices = [];
-  if (lvl % 3 === 0) cardChoices.push(arrowOffer(lvl));
-  while (cardChoices.length < Math.min(3, opts.length + (lvl % 3 === 0 ? 1 : 0))) {
+  const opts = availableUpgrades(player), cards = [];
+  if (lvl % 3 === 0) cards.push(arrowOffer(lvl));
+  while (cards.length < Math.min(3, opts.length + (lvl % 3 === 0 ? 1 : 0))) {
     const u = opts[Math.floor(Math.random() * opts.length)];
-    if (!cardChoices.includes(u)) cardChoices.push(u);
+    if (!cards.includes(u)) cards.push(u);
   }
-  if (!cardChoices.length) { player.pendingChoices = 0; return; }
-  choosing = true;
-  mouse.l = mouse.r = false; joy.id = null; aimStick.id = null; aimStick.pendingT = 0; btnTouches.clear();
-  if (isLocked()) document.exitPointerLock();
-  document.getElementById('lvtitle').textContent = `LEVEL ${player.level - player.pendingChoices + 1}`;
-  cardsEl.innerHTML = '';
-  cardChoices.forEach((u, i) => {
-    const b = document.createElement('button');
-    b.className = 'card';
-    if (u.arrow) {
-      const Wp = WEAPONS[u.type], has = player.slots.find(sl => sl.type === u.type);
-      const note = has ? `Upgrade from tier ${ROMAN[has.tier]}` : player.slots.length >= MAX_SLOTS ? 'Quiver full: replaces the arrow in your hand' : `Slot ${player.slots.length + 1} of ${MAX_SLOTS}`;
-      b.className = 'card arrowcard'; b.style.setProperty('--wc', Wp.col);
-      b.innerHTML = `<span class="key">${touchMode ? '' : i + 1}</span><img alt="" src="${arrowIconURL(u.type, u.tier)}"><b>${Wp.name} arrows ${ROMAN[u.tier]}</b><span>${Wp.desc}</span><em>${note}</em>`;
-    } else
-    b.innerHTML = `<span class="key">${touchMode ? '' : i + 1}</span><b>${u.name}</b><span>${u.desc}</span><em>${player.up[u.id]} / ${u.max}</em>`;
-    b.addEventListener('click', () => pickCard(i));
-    cardsEl.appendChild(b);
-  });
-  levelEl.style.display = 'flex';
+  return cards.length ? { level: lvl, cards } : null;
 }
-function pickCard(i) {
-  if (!choosing || !cardChoices[i]) return;
-  const c = cardChoices[i];
+function ensureOffer() {
+  if (player.dead || player.pendingChoices <= 0) { offer = null; return; }
+  if (!offer) { offer = buildOffer(); if (!offer) player.pendingChoices = 0; }
+}
+function pickOffer(i) {
+  if (!offer || !offer.cards[i]) return false;
+  const c = offer.cards[i];
   if (c.arrow) giveArrow(player, c.type, c.tier);
   else { applyUpgrade(player, c.id); popText(player.x, player.y - 46, c.name, '#5eead4', true); }
-  player.pendingChoices--;
-  choosing = false; levelEl.style.display = 'none';
-  pressed.clear(); keys.clear();
-  if (player.pendingChoices <= 0) lockPointer();
+  player.pendingChoices--; offer = null; ensureOffer();
+  return true;
+}
+// where the strip sits: top centre, clear of the HP box, the arrow panel and both thumb zones
+function offerLayout() {
+  if (!offer) return null;
+  const n = offer.cards.length, gap = 8;
+  const w = touchMode ? Math.min(W * 0.56, 460) : Math.min(620, W - 360);
+  const cw = (w - gap * (n - 1)) / n, ch = touchMode ? 40 : 60;
+  const x0 = (W - w) / 2, y0 = touchMode ? 64 : 96;
+  return { y0, cw, ch, cards: offer.cards.map((c, i) => ({ c, x: x0 + i * (cw + gap), y: y0, w: cw, h: ch })) };
+}
+function offerHit(x, y) {
+  const L = offerLayout(); if (!L) return -1;
+  return L.cards.findIndex(k => x >= k.x - 4 && x <= k.x + k.w + 4 && y >= k.y - 4 && y <= k.y + k.h + 4);
+}
+function drawOffer() {
+  const L = offerLayout(); if (!L) return;
+  const keysTxt = ['Z', 'X', 'C'];
+  ctx.textAlign = 'center'; ctx.fillStyle = '#5eead4'; ctx.font = '800 12px system-ui, sans-serif';
+  const more = player.pendingChoices > 1 ? ` · ${player.pendingChoices - 1} more waiting` : '';
+  ctx.fillText(`LEVEL ${offer.level} · PICK ONE${touchMode ? '' : ' (Z X C or click)'}${more}`, W / 2, L.y0 - 7);
+  L.cards.forEach((k, i) => {
+    const c = k.c, col = c.arrow ? WEAPONS[c.type].col : '#5eead4';
+    ctx.fillStyle = '#0b0e14e6'; roundRect(k.x, k.y, k.w, k.h, 9); ctx.fill();
+    ctx.strokeStyle = col; ctx.lineWidth = 2; roundRect(k.x, k.y, k.w, k.h, 9); ctx.stroke();
+    if (!touchMode) { ctx.textAlign = 'left'; ctx.fillStyle = '#ffb020'; ctx.font = '800 10px system-ui, sans-serif'; ctx.fillText(keysTxt[i], k.x + 6, k.y + 12); }
+    const fit = (txt, size, maxW) => { let z = size; ctx.font = `800 ${z}px system-ui, sans-serif`; while (z > 7 && ctx.measureText(txt).width > maxW) { z--; ctx.font = `800 ${z}px system-ui, sans-serif`; } };
+    ctx.textAlign = 'center';
+    if (c.arrow) {
+      drawArrowArt(ctx, c.type, k.x + k.w / 2, k.y + k.h * 0.36, 0, Math.min(k.w * 0.62, k.h * 1.9), c.tier >= 3 ? { glow: 8 } : {});
+      const t = `${WEAPONS[c.type].name} ${ROMAN[c.tier]}`;
+      fit(t, touchMode ? 11 : 13, k.w - 10); ctx.fillStyle = col; ctx.fillText(t, k.x + k.w / 2, k.y + k.h - 9);
+    } else {
+      const head = touchMode ? `${c.name} · ${player.up[c.id]}/${c.max}` : c.name;
+      fit(head, touchMode ? 11 : 13, k.w - 10); ctx.fillStyle = col; ctx.fillText(head, k.x + k.w / 2, k.y + (touchMode ? 16 : 24));
+      ctx.fillStyle = '#c8ced8'; ctx.font = `600 ${touchMode ? 9 : 10}px system-ui, sans-serif`;
+      let d = c.desc; while (d.length > 8 && ctx.measureText(d).width > k.w - 10) d = d.slice(0, -2);
+      if (d !== c.desc) d = d.trimEnd() + '…';
+      ctx.fillText(d, k.x + k.w / 2, k.y + (touchMode ? 31 : 40));
+      if (!touchMode) { ctx.fillStyle = '#9aa3b2'; ctx.font = '700 9px system-ui, sans-serif'; ctx.fillText(`${player.up[c.id]} / ${c.max}`, k.x + k.w / 2, k.y + k.h - 5); }
+    }
+  });
 }
 
 // ---------- game setup ----------
@@ -1176,11 +1222,13 @@ function drawFighter(f) {
   }
   if (f.iframe > 0 && !f.dead && f.dashT <= 0 && Math.floor(performance.now() / 80) % 2) ctx.globalAlpha *= 0.5;
   ctx.rotate(f.face + f.spin);
+  ctx.scale(f.r / BASE_R, f.r / BASE_R);
+  const R = BASE_R;
   ctx.fillStyle = f.color; ctx.strokeStyle = '#0b0d12'; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.arc(0, 0, f.r, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.arc(6, 0, 8, 0, TAU); ctx.fillStyle = '#ffffff55'; ctx.fill();
-  ctx.fillStyle = '#6b4a2a'; ctx.fillRect(-f.r - 4, -12, 10, 8);
-  const bowX = f.r - 4 - f.recoil * 20, bowR = 22;
+  ctx.fillStyle = '#6b4a2a'; ctx.fillRect(-R - 4, -12, 10, 8);
+  const bowX = R - 4 - f.recoil * 20, bowR = 22;
   const tipX = bowX + Math.cos(1.05) * bowR, tipY = Math.sin(1.05) * bowR;
   const pull = f.drawing ? f.draw * 20 : 0;
   ctx.strokeStyle = '#ddd2bd'; ctx.lineWidth = 1.5;
@@ -1191,12 +1239,12 @@ function drawFighter(f) {
   ctx.fillStyle = f.color; ctx.strokeStyle = '#0b0d12'; ctx.lineWidth = 2.5;
   ctx.beginPath(); ctx.arc(bowX + bowR, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.arc(tipX - pull, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
-  if (f.flash > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r, 0, TAU); ctx.fillStyle = '#ffffffcc'; ctx.fill(); }
-  if (f.frozen > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r + 3, 0, TAU); ctx.fillStyle = '#bfe9ffaa'; ctx.fill(); ctx.strokeStyle = '#e6f8ff'; ctx.lineWidth = 2; ctx.stroke(); }
-  else if (f.slow > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r + 2, 0, TAU); ctx.strokeStyle = '#9be7ff88'; ctx.lineWidth = 2; ctx.stroke(); }
-  if (f.poison > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r, 0, TAU); ctx.fillStyle = `rgba(123,216,92,${0.12 * f.poisonStacks})`; ctx.fill(); }
+  if (f.flash > 0) { ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = '#ffffffcc'; ctx.fill(); }
+  if (f.frozen > 0) { ctx.beginPath(); ctx.arc(0, 0, R + 3, 0, TAU); ctx.fillStyle = '#bfe9ffaa'; ctx.fill(); ctx.strokeStyle = '#e6f8ff'; ctx.lineWidth = 2; ctx.stroke(); }
+  else if (f.slow > 0) { ctx.beginPath(); ctx.arc(0, 0, R + 2, 0, TAU); ctx.strokeStyle = '#9be7ff88'; ctx.lineWidth = 2; ctx.stroke(); }
+  if (f.poison > 0) { ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = `rgba(123,216,92,${0.12 * f.poisonStacks})`; ctx.fill(); }
   if (f.blocking) {
-    ctx.beginPath(); ctx.arc(0, 0, f.r + 14, -1.15, 1.15); ctx.strokeStyle = '#7ad7ff'; ctx.lineWidth = 6; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, R + 14, -1.15, 1.15); ctx.strokeStyle = '#7ad7ff'; ctx.lineWidth = 6; ctx.stroke();
   }
   ctx.restore();
 
@@ -1208,6 +1256,12 @@ function drawFighter(f) {
   ctx.font = '600 12px system-ui, sans-serif'; ctx.textAlign = 'center';
   ctx.fillStyle = f === player ? '#ffb020' : '#e8ecf3';
   ctx.fillText(`${f.name} · ${f.level}`, f.x, by - 5);
+  if (f.bounty) {
+    const cx = f.x, cy = by - 22;
+    ctx.fillStyle = '#ffc400'; ctx.beginPath();
+    ctx.moveTo(cx - 12, cy + 6); ctx.lineTo(cx - 12, cy - 4); ctx.lineTo(cx - 6, cy + 1); ctx.lineTo(cx, cy - 8); ctx.lineTo(cx + 6, cy + 1); ctx.lineTo(cx + 12, cy - 4); ctx.lineTo(cx + 12, cy + 6); ctx.closePath(); ctx.fill();
+    ctx.font = '800 9px system-ui, sans-serif'; ctx.fillText('BOUNTY', cx, cy - 12);
+  }
   if (f.stun > 0 && f.ragdoll <= 0) {
     ctx.fillStyle = f.guardBreak > 0 ? '#ff5a5a' : '#facc15';
     ctx.fillText('✦', f.x - 10 + Math.sin(performance.now() / 70) * 6, by - 18);
@@ -1345,7 +1399,7 @@ function drawHud() {
 
   ctx.font = '700 13px system-ui, sans-serif';
   feed.forEach((e, i) => {
-    const y = touchMode ? 24 + i * 20 : (compact ? 70 : 22) + i * 22;
+    const y = touchMode ? (offer ? 124 : 24) + i * 20 : (compact ? 70 : 22) + i * 22;
     ctx.globalAlpha = Math.min(1, e.t);
     ctx.textAlign = 'right';
     const right = touchMode ? W / 2 + 70 : W - 12;
@@ -1364,6 +1418,8 @@ function drawHud() {
     ctx.fillText('Turn your phone sideways to play', W / 2, 80);
   }
   drawSwapPrompt();
+  drawOffer();
+  drawBountyHud();
   if (touchMode) drawTouch();
   else drawArrowBar();
 
@@ -1448,6 +1504,26 @@ function drawSwitchPanel() {
   ctx.fillStyle = '#9aa3b2'; ctx.fillText(hint, tx, r.y + r.h * 0.9);
 }
 
+// Bounty: a crown over the hunted one, an arrow at the screen edge pointing to them, and a warning if it is you
+function drawBountyHud() {
+  const b = fighters.find(f => f.bounty && !f.dead);
+  if (!b) return;
+  if (b === player) {
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ffc400'; ctx.font = '800 13px system-ui, sans-serif';
+    ctx.fillText('YOU HAVE A BOUNTY · everyone is hunting you', W / 2, H * 0.32);
+    return;
+  }
+  const sx = (b.x - cam.x) * VS + W / 2, sy = (b.y - cam.y) * VS + H / 2;
+  if (sx > 30 && sx < W - 30 && sy > 30 && sy < H - 30) return;   // on screen: the crown is enough
+  const ang = Math.atan2(sy - H / 2, sx - W / 2), m = 46;
+  const ex = clamp(W / 2 + Math.cos(ang) * W, m, W - m), ey = clamp(H / 2 + Math.sin(ang) * H, m + 40, H - m);
+  ctx.save(); ctx.translate(ex, ey); ctx.rotate(ang);
+  ctx.fillStyle = '#ffc400'; ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(-8, -10); ctx.lineTo(-8, 10); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffc400'; ctx.font = '800 10px system-ui, sans-serif';
+  ctx.fillText(`BOUNTY ${b.name} · LV ${b.level}`, ex, ey + 24);
+}
+
 function drawSwapPrompt() {
   if (!swapCand || player.dead) return;
   const out = player.slots[swapIndex(player)], qcol = WEAPONS[swapCand.type].col;
@@ -1514,9 +1590,12 @@ function drawTouch() {
     ctx.beginPath(); ctx.arc(hx, hy, r, 0, TAU); ctx.fillStyle = '#00000066'; ctx.fill();
     ctx.strokeStyle = wcol + 'aa'; ctx.lineWidth = 3; ctx.stroke();
     ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 12px system-ui, sans-serif'; ctx.fillText('SHOOT', hx, hy + 2);
-    ctx.fillStyle = '#9aa3b2'; ctx.font = '700 8px system-ui, sans-serif'; ctx.fillText('OR ANYWHERE HERE', hx, hy + 15);
-    ctx.fillStyle = '#ffffff30'; ctx.font = '600 13px system-ui, sans-serif';
-    ctx.fillText('press anywhere here, drag to aim, let go to shoot', W * 0.75, H / 2 + 22);
+    ctx.fillStyle = '#9aa3b2'; ctx.font = '700 8px system-ui, sans-serif'; ctx.fillText('OR ANYWHERE', hx, hy + 15);
+    if (!aimedOnce) {
+      ctx.fillStyle = '#ffffff55'; ctx.textAlign = 'left';
+      ctx.font = '800 11px system-ui, sans-serif'; ctx.fillText('SHOOT ZONE', W / 2 + 12, H - 38);
+      ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText('press · drag to aim · let go', W / 2 + 12, H - 22);
+    }
   }
   for (const b of touchButtons()) {
     const frac = clamp(cdFraction(b.id), 0, 1);
@@ -1561,7 +1640,8 @@ function frame(now) {
       for (const b of bolts) b.t += dt;
       bolts = bolts.filter(b => b.t < 0.18);
     }
-    if (player.pendingChoices > 0 && !player.dead && hitStop <= 0) openChoice();
+    ensureOffer();
+    updateBounty();
     // the camera leans toward the aim so you can see further ahead
     const lean = player.dead ? 0 : 60 + 60 * player.draw;
     const tx = player.x + Math.cos(player.face) * lean, ty = player.y + Math.sin(player.face) * lean;
