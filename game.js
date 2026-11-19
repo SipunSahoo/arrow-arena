@@ -40,10 +40,12 @@ const POWERUPS = {
   haste: { col: '#5ab0ff', label: 'HASTE', sym: '»', note: 'faster moving and drawing for 10s' },
   bubble: { col: '#7ad7ff', label: 'SHIELD', sym: '◆', note: 'absorbs the next 40 damage' },
   heal: { col: '#4ade80', label: 'HEAL', sym: '+', note: '+40 HP' },
+  vision: { col: '#c084fc', label: 'VISION', sym: '◎', note: 'see much more of the arena for 15s' },
   volley: { col: '#ffc400', label: 'VOLLEY', sym: '✸', note: 'a ring of 16 arrows, then 10s of faster, stronger shots' },
 };
 // Volley is the rare one: one slot in nine.
-const POWERUP_ROLL = ['rage', 'haste', 'bubble', 'heal', 'rage', 'haste', 'bubble', 'heal', 'volley'];
+const POWERUP_ROLL = ['rage', 'haste', 'bubble', 'heal', 'vision', 'rage', 'haste', 'bubble', 'heal', 'vision', 'volley'];
+const VISION_ZOOM = 0.72;   // camera scale while VISION is active: about twice the arena area on screen
 
 // Arrow types. Everyone carries all of them and switches between them (Q / E, wheel, 1-7, or SWITCH on a phone).
 const WEAPONS = {
@@ -59,6 +61,7 @@ const WEAPON_IDS = Object.keys(WEAPONS);
 const SPECIAL_IDS = WEAPON_IDS.filter(id => id !== 'classic');
 const RARITY = { fire: 3, frost: 3, poison: 3, explosive: 2, piercing: 2, lightning: 2 };   // higher = more common
 const MAX_SLOTS = 3;
+const DROP_LIFE = 6;   // seconds a dropped quiver (from a knock-out or a swap) stays on the ground
 const ROMAN = ['', 'I', 'II', 'III'];
 const tierMult = t => 1 + 0.25 * (t - 1);   // tier II hits 25% harder, tier III 50%
 function rollType(exclude = []) {
@@ -92,13 +95,13 @@ const D = () => DIFFICULTY[settings.difficulty];
 // ---------- canvas ----------
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-let W = 0, H = 0, DPR = 1, VIEW = 1;
+let W = 0, H = 0, DPR = 1, VIEW = 1, zoom = 1, VS = 1;   // VS = VIEW x zoom, the scale actually drawn
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = W * DPR; canvas.height = H * DPR;
   canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-  VIEW = clamp(Math.min(W, H) / 820, 0.5, 1.05);
+  VIEW = clamp(Math.min(W, H) / 820, 0.5, 1.05); VS = VIEW * zoom;
 }
 window.addEventListener('resize', resize);
 resize();
@@ -150,7 +153,7 @@ class Fighter {
       stun: 0, ragdoll: 0, spin: 0, spinV: 0, shotCd: 0, draw: 0, drawing: false, recoil: 0,
       blocking: false, dashT: 0, lock: 0, cd: { dash: 0 },
       awaken: 0, slow: 0, flash: 0, iframe: 1.2, lastHitBy: null, lastHitT: 0, guardBreak: 0,
-      level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0,
+      level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0, vision: 0,
       slots: [{ type: 'classic', tier: 1 }], cur: 0, weapon: 'classic', tier: 1,
       burn: 0, burnTick: 0, burnBy: null, poison: 0, poisonStacks: 0, poisonTick: 0, poisonBy: null, frozen: 0,
     });
@@ -209,6 +212,7 @@ function grabPowerup(f, p) {
   if (p.type === 'bubble') f.bubble = 40;
   if (p.type === 'heal') f.hp = Math.min(f.maxHp, f.hp + 40);
   if (p.type === 'volley') { awaken(f); return; }
+  if (p.type === 'vision') f.vision = 15;
   ring(p.x, p.y, 10, 80, 0.4, P.col, 5);
   popText(f.x, f.y - 46, P.label, P.col, true);
 }
@@ -242,20 +246,21 @@ function giveArrow(f, type, tier) {
   const i = swapIndex(f);
   const old = f.slots[i];
   f.slots[i] = { type, tier };
-  quivers.push({ x: f.x + rand(-30, 30), y: f.y + rand(-30, 30), type: old.type, tier: old.tier, t: 0, holdFrom: f, holdT: 2 });
+  quivers.push({ x: f.x + rand(-30, 30), y: f.y + rand(-30, 30), type: old.type, tier: old.tier, t: 0, holdFrom: f, holdT: 2, life: DROP_LIFE });
   if (f.cur === i) { f.weapon = type; f.tier = tier; f.drawing = false; f.draw = 0; }
   if (f === player) popText(f.x, f.y - 46, `${name} (dropped ${WEAPONS[old.type].name})`, WEAPONS[type].col, true);
   return true;
 }
-// With a full quiver, which slot a new type replaces: the special in your hand, else your weakest special.
-function swapIndex(f) {
-  if (f.slots[f.cur].type !== 'classic') return f.cur;
-  let i = 1; for (let k = 2; k < f.slots.length; k++) if (f.slots[k].tier < f.slots[i].tier) i = k;
-  return i;
-}
+// With a full quiver, a new type replaces the arrow in your hand, Classic included.
+function swapIndex(f) { return f.cur; }
 const quiverFullFor = (f, q) => f.slots.length >= MAX_SLOTS && !f.slots.some(sl => sl.type === q.type);
 // bots only swap when the new one is a better tier than what it would replace
-const botWants = (f, q) => wantsArrow(f, q.type, q.tier) && (!quiverFullFor(f, q) || q.tier > f.slots[swapIndex(f)].tier);
+const botWants = (f, q) => {
+  if (!wantsArrow(f, q.type, q.tier)) return false;
+  if (!quiverFullFor(f, q)) return true;
+  const out = f.slots[swapIndex(f)];
+  return q.type !== 'classic' && (out.type === 'classic' || q.tier > out.tier);
+};
 let swapCand = null;   // a quiver the player stands on but can only take by swapping (R / SWAP)
 
 function spawnQuiver() {
@@ -297,6 +302,7 @@ function updatePickups(dt) {
   }
   quivers = quivers.filter(q => !q.taken);
   for (const q of quivers) { q.t += dt; if (q.holdT > 0) q.holdT -= dt; }
+  quivers = quivers.filter(q => !q.life || q.t < q.life);   // dropped arrows vanish; the ones that spawn stay
   qTimer -= dt;
   if (qTimer <= 0) { qTimer = rand(9, 15); if (quivers.length < 4) spawnQuiver(); }
   orbs = orbs.filter(o => !o.taken);
@@ -412,7 +418,7 @@ function killFighter(t, a) {
   ring(t.x, t.y, 10, 110, 0.5, '#ffffff', 5);
   sparks(t.x, t.y, t.color, 24, 380);
   dropOrbs(t.x, t.y, 4 + Math.floor(t.xpTotal * 0.5), true);   // half their XP spills on the ground
-  for (const sl of t.slots) if (sl.type !== 'classic') quivers.push({ x: t.x + rand(-40, 40), y: t.y + rand(-40, 40), type: sl.type, tier: sl.tier, t: 0 });
+  for (const sl of t.slots) if (sl.type !== 'classic') quivers.push({ x: t.x + rand(-40, 40), y: t.y + rand(-40, 40), type: sl.type, tier: sl.tier, t: 0, life: DROP_LIFE });
   if (t === player || killer === player) shake = Math.max(shake, 14);
 }
 
@@ -486,7 +492,7 @@ function updateFighter(f, dt, I) {
   f.flash = Math.max(0, f.flash - dt); f.iframe = Math.max(0, f.iframe - dt); f.stun = Math.max(0, f.stun - dt);
   f.lock = Math.max(0, f.lock - dt); f.slow = Math.max(0, f.slow - dt);
   f.guardBreak = Math.max(0, f.guardBreak - dt); f.lastHitT = Math.max(0, f.lastHitT - dt);
-  f.rage = Math.max(0, f.rage - dt); f.haste = Math.max(0, f.haste - dt);
+  f.rage = Math.max(0, f.rage - dt); f.haste = Math.max(0, f.haste - dt); f.vision = Math.max(0, f.vision - dt);
   if (f.awaken > 0) {
     f.awaken -= dt;
     if (Math.random() < dt * 30) particles.push({ x: f.x + rand(-18, 18), y: f.y + rand(-18, 18), vx: rand(-20, 20), vy: rand(-90, -40), t: 0, life: 0.5, col: '#ffc400', size: rand(2, 4) });
@@ -922,7 +928,7 @@ function playerIntent(dt) {
   } else {
     I.mx = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
     I.my = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
-    const wx = (mouse.x - W / 2) / VIEW + cam.x, wy = (mouse.y - H / 2) / VIEW + cam.y;
+    const wx = (mouse.x - W / 2) / VS + cam.x, wy = (mouse.y - H / 2) / VS + cam.y;
     I.aim = Math.atan2(wy - player.y, wx - player.x);
     I.tx = wx; I.ty = wy;
     I.m1 = mouse.l || keys.has('j');
@@ -1006,7 +1012,7 @@ function newGame() {
 
 // ---------- drawing ----------
 function inView(x, y, pad = 60) {
-  return Math.abs(x - cam.x) < W / 2 / VIEW + pad && Math.abs(y - cam.y) < H / 2 / VIEW + pad;
+  return Math.abs(x - cam.x) < W / 2 / VS + pad && Math.abs(y - cam.y) < H / 2 / VS + pad;
 }
 function drawArena() {
   ctx.fillStyle = '#0d0f14'; ctx.fillRect(-1e5, -1e5, 2e5, 2e5);
@@ -1015,8 +1021,8 @@ function drawArena() {
   ctx.fillStyle = '#1d2a22'; ctx.fill();
   ctx.clip();
   ctx.strokeStyle = '#223127'; ctx.lineWidth = 2;
-  const x0 = Math.floor((cam.x - W / 2 / VIEW) / 100) * 100, x1 = cam.x + W / 2 / VIEW;
-  const y0 = Math.floor((cam.y - H / 2 / VIEW) / 100) * 100, y1 = cam.y + H / 2 / VIEW;
+  const x0 = Math.floor((cam.x - W / 2 / VS) / 100) * 100, x1 = cam.x + W / 2 / VS;
+  const y0 = Math.floor((cam.y - H / 2 / VS) / 100) * 100, y1 = cam.y + H / 2 / VS;
   ctx.beginPath();
   for (let x = x0; x <= x1; x += 100) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
   for (let y = y0; y <= y1; y += 100) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
@@ -1043,7 +1049,13 @@ function drawPickups() {
   }
   for (const q of quivers) {
     if (!inView(q.x, q.y)) continue;
+    const left = q.life ? q.life - q.t : Infinity;
+    if (left < 2 && Math.floor(now / 110) % 2) continue;   // blinks before it vanishes
     const col = WEAPONS[q.type].col, bob = Math.sin(now / 300 + q.x) * 3, pulse = 22 + Math.sin(now / 200) * 2 + q.tier * 3;
+    if (q.life) {   // timer ring: shrinks as the dropped quiver runs out
+      ctx.beginPath(); ctx.arc(q.x, q.y + bob, pulse + 5, -Math.PI / 2, -Math.PI / 2 + TAU * Math.max(0, left / q.life));
+      ctx.strokeStyle = left < 2 ? '#ff5a5a' : '#ffffffaa'; ctx.lineWidth = 3; ctx.stroke();
+    }
     ctx.beginPath(); ctx.arc(q.x, q.y + bob, pulse, 0, TAU); ctx.fillStyle = col + '2a'; ctx.fill();
     ctx.lineWidth = 2; ctx.strokeStyle = col + '99'; ctx.stroke();
     drawArrowArt(ctx, q.type, q.x, q.y + bob, -0.6, 46, q.tier >= 2 ? { glow: q.tier * 5 } : {});
@@ -1293,6 +1305,7 @@ function drawHud() {
   if (player.rage > 0) buffs.push([`RAGE ${Math.ceil(player.rage)}s`, '#ff4d4d']);
   if (player.haste > 0) buffs.push([`HASTE ${Math.ceil(player.haste)}s`, '#5ab0ff']);
   if (player.bubble > 0) buffs.push([`SHIELD ${Math.ceil(player.bubble)}`, '#7ad7ff']);
+  if (player.vision > 0) buffs.push([`VISION ${Math.ceil(player.vision)}s`, '#c084fc']);
   if (buffs.length) {
     ctx.font = '800 12px system-ui, sans-serif'; ctx.textAlign = 'center';
     const gap = 110, start = W / 2 - (buffs.length - 1) * gap / 2;
@@ -1555,6 +1568,9 @@ function frame(now) {
     const k = 1 - Math.exp(-6 * dt);
     cam.x += (tx - cam.x) * k; cam.y += (ty - cam.y) * k;
     shake *= Math.exp(-10 * dt);
+    // VISION eases the camera out, and back in when it ends (or when you are knocked out)
+    const zt = player.vision > 0 && !player.dead ? VISION_ZOOM : 1;
+    zoom += (zt - zoom) * (1 - Math.exp(-3 * dt)); VS = VIEW * zoom;
   }
 
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -1562,7 +1578,7 @@ function frame(now) {
   if (player) {
     const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
     ctx.save();
-    ctx.translate(W / 2 + sx, H / 2 + sy); ctx.scale(VIEW, VIEW); ctx.translate(-cam.x, -cam.y);
+    ctx.translate(W / 2 + sx, H / 2 + sy); ctx.scale(VS, VS); ctx.translate(-cam.x, -cam.y);
     drawArena(); drawWorld();
     ctx.restore();
     if (running) drawHud();
