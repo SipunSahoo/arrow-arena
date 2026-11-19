@@ -176,7 +176,7 @@ function sparks(x, y, col, n, speed = 260) {
     particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, t: 0, life: rand(0.2, 0.45), col, size: rand(2, 4.5) });
   }
 }
-function ring(x, y, r0, r1, life, col, w = 4) { rings.push({ x, y, r0, r1, t: 0, life, col, w }); }
+function ring(x, y, r0, r1, life, col, w = 4, arc = null) { rings.push({ x, y, r0, r1, t: 0, life, col, w, arc }); }
 function popText(x, y, txt, col, big = false) { texts.push({ x, y, txt, col, t: 0, life: 0.8, big }); }
 
 // ---------- XP, levels, upgrades ----------
@@ -455,6 +455,34 @@ function spawnArrow(f, ang, o) {
   });
 }
 
+// Full-draw shockwave: a forward wave and a body ring in the arrow type colour, plus that type's own burst.
+function shockwave(f) {
+  const a = f.face, c = Math.cos(a), sn = Math.sin(a), tx = f.x + c * (f.r + 16), ty = f.y + sn * (f.r + 16);
+  const col = f.rage > 0 ? '#ff4d4d' : f.awaken > 0 ? '#ffc400' : WEAPONS[f.weapon].col;
+  ring(tx, ty, 6, 100, 0.36, col, 9, [a - 0.9, a + 0.9]);
+  ring(tx, ty, 6, 70, 0.3, col, 4, [a - 0.7, a + 0.7]);
+  ring(tx, ty, 4, 46, 0.22, '#ffffff', 3, [a - 0.6, a + 0.6]);
+  ring(f.x, f.y, f.r, f.r + 34, 0.25, col, 3);
+  const burst = (n, cols, spdLo, spdHi, spread, size, life, drift = 0) => {
+    for (let i = 0; i < n; i++) {
+      const ang = a + rand(-spread, spread), sp = rand(spdLo, spdHi);
+      particles.push({ x: tx, y: ty, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp + drift, t: 0, life: rand(life * 0.6, life), col: cols[i % cols.length], size: rand(size * 0.6, size) });
+    }
+  };
+  switch (f.weapon) {
+    case 'fire': burst(16, ['#ff6a00', '#ffb020', '#ffd24a'], 120, 360, 0.7, 5, 0.5, -60); break;
+    case 'frost': burst(14, ['#bfe9ff', '#ffffff', '#9be7ff'], 160, 380, 0.8, 4, 0.45); ring(tx, ty, 8, 52, 0.4, '#e6f8ff', 2); break;
+    case 'explosive': burst(10, ['#ff8a3d', '#ffcf5a'], 180, 420, 0.9, 5, 0.35); burst(10, ['#6b6b6b', '#8a8a8a'], 40, 140, 1.2, 8, 0.6); break;
+    case 'piercing': burst(8, ['#8fe3ff', '#ffffff'], 700, 1100, 0.06, 3, 0.22); break;
+    case 'poison': burst(14, ['#7bd85c', '#a6f07a', '#4a9a35'], 80, 260, 0.8, 5, 0.6, 40); break;
+    case 'lightning':
+      for (let i = 0; i < 3; i++) { const ang = a + rand(-0.6, 0.6), L = rand(50, 90); bolts.push({ x1: tx, y1: ty, x2: tx + Math.cos(ang) * L, y2: ty + Math.sin(ang) * L, t: 0 }); }
+      burst(8, ['#ffe95a', '#ffffff'], 200, 420, 0.7, 3, 0.3); break;
+    default: burst(10, ['#fff3c4', '#ffffff'], 160, 360, 0.6, 3, 0.3);
+  }
+  if (f === player) shake = Math.max(shake, 3);
+}
+
 function fireBow(f, charge) {
   const c = clamp(charge, 0.2, 1), full = c >= 0.98, U = f.up, Wp = WEAPONS[f.weapon];
   const base = {
@@ -470,7 +498,7 @@ function fireBow(f, charge) {
   if (U.back) spawnArrow(f, f.face + Math.PI, { ...base, dmg: base.dmg * 0.7 });
   f.shotCd = SHOT_CD * (f.awaken > 0 ? 0.6 : 1) * (1 - 0.2 * U.reload); f.recoil = 0.12;
   f.vx -= Math.cos(f.face) * 40 * c; f.vy -= Math.sin(f.face) * 40 * c;
-  if (full) sparks(f.x + Math.cos(f.face) * 30, f.y + Math.sin(f.face) * 30, '#ffe7a8', 5, 160);
+  if (full) shockwave(f);
 }
 
 function awaken(f) {
@@ -781,7 +809,7 @@ const pauseEl = document.getElementById('pause');
 function setPaused(on) {
   paused = on; pauseEl.style.display = on ? 'flex' : 'none';
   if (on) {
-    mouse.l = mouse.r = false; keys.clear(); joy.id = null; aimStick.id = null; aimStick.pendingT = 0; btnTouches.clear();
+    mouse.l = mouse.r = false; keys.clear(); joy.id = null; aimStick.id = null; aimStick.pendingT = 0; cardTouch.id = null; btnTouches.clear();
     if (isLocked()) document.exitPointerLock();   // a held mouse would send every click to the game, not the menu
     buildPickers(document.getElementById('pausePickers'));
   }
@@ -877,6 +905,7 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 const joy = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
 const aimStick = { id: null, ox: 0, oy: 0, x: 0, y: 0, lockAng: 0, pendingT: 0 };
 const AIM_DEADZONE = 18;
+const cardTouch = { id: null, idx: -1, sx: 0, sy: 0 };   // a thumb that landed on a level-up card
 let aimedOnce = false;   // the shoot-zone hint goes away after the first aim
 const inShootZone = (x, y) => x >= W / 2 && y >= H / 2;
 const inMoveZone = x => x < W / 2;
@@ -898,7 +927,7 @@ function handleTouchStart(e) {
   for (const t of e.changedTouches) {
     const tx = t.clientX, ty = t.clientY;
     const oh = offerHit(tx, ty);
-    if (running && oh >= 0) { pickOffer(oh); continue; }
+    if (running && oh >= 0 && cardTouch.id === null) { Object.assign(cardTouch, { id: t.identifier, idx: oh, sx: tx, sy: ty }); continue; }
     if (running && Math.hypot(tx - pb.x, ty - pb.y) < pb.r + 12) { setPaused(true); return; }
     if (canFullscreen && Math.hypot(tx - fb.x, ty - fb.y) < fb.r + 12) { toggleFullscreen(); continue; }
     if (tx >= sr.x - 6 && tx <= sr.x + sr.w + 6 && ty >= sr.y - 6 && ty <= sr.y + sr.h + 6) { btnPressed.add('switch'); continue; }
@@ -917,6 +946,12 @@ function handleTouchStart(e) {
 function handleTouchMove(e) {
   e.preventDefault();
   for (const t of e.changedTouches) {
+    if (t.identifier === cardTouch.id && Math.hypot(t.clientX - cardTouch.sx, t.clientY - cardTouch.sy) > 14) {
+      // it was a drag, not a tap: hand the thumb to the stick for the zone it started in
+      const { sx, sy } = cardTouch; cardTouch.id = null;
+      if (inShootZone(sx, sy) && aimStick.id === null) Object.assign(aimStick, { id: t.identifier, ox: sx, oy: sy, x: t.clientX, y: t.clientY, lockAng: player.face, pendingT: 0.35 });
+      else if (inMoveZone(sx) && joy.id === null) Object.assign(joy, { id: t.identifier, ox: sx, oy: sy, x: t.clientX, y: t.clientY });
+    }
     if (t.identifier === joy.id) { joy.x = t.clientX; joy.y = t.clientY; }
     if (t.identifier === aimStick.id) { aimStick.x = t.clientX; aimStick.y = t.clientY; }
   }
@@ -924,6 +959,7 @@ function handleTouchMove(e) {
 function handleTouchEnd(e) {
   e.preventDefault();
   for (const t of e.changedTouches) {
+    if (t.identifier === cardTouch.id) { if (offerHit(t.clientX, t.clientY) === cardTouch.idx) pickOffer(cardTouch.idx); cardTouch.id = null; }
     if (t.identifier === joy.id) joy.id = null;
     if (t.identifier === aimStick.id) aimStick.id = null;
     btnTouches.delete(t.identifier);
@@ -1010,13 +1046,19 @@ function pickOffer(i) {
   player.pendingChoices--; offer = null; ensureOffer();
   return true;
 }
-// where the strip sits: top centre, clear of the HP box, the arrow panel and both thumb zones
+// where the strip sits: bottom centre. Phone: between the thumbs, clear of DASH. Laptop: just above the arrow bar.
 function offerLayout() {
   if (!offer) return null;
   const n = offer.cards.length, gap = 8;
-  const w = touchMode ? Math.min(W * 0.56, 460) : Math.min(620, W - 360);
-  const cw = (w - gap * (n - 1)) / n, ch = touchMode ? 40 : 60;
-  const x0 = (W - w) / 2, y0 = touchMode ? 64 : 96;
+  let w, x0, y0, ch;
+  if (touchMode) {
+    const dash = touchButtons().find(b => b.id === 'dash');
+    const left = W * 0.24, right = Math.min(dash.x - dash.r - 10, W - 12);
+    w = Math.min(460, right - left); x0 = left + (right - left - w) / 2; ch = 42; y0 = H - ch - 10;
+  } else {
+    w = Math.min(620, W - 360); x0 = (W - w) / 2; ch = 60; y0 = H - 104 - ch;
+  }
+  const cw = (w - gap * (n - 1)) / n;
   return { y0, cw, ch, cards: offer.cards.map((c, i) => ({ c, x: x0 + i * (cw + gap), y: y0, w: cw, h: ch })) };
 }
 function offerHit(x, y) {
@@ -1293,7 +1335,7 @@ function drawWorld() {
   ctx.globalAlpha = 1;
   for (const r of rings) {
     const k = r.t / r.life;
-    ctx.beginPath(); ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * k, 0, TAU);
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.r0 + (r.r1 - r.r0) * k, r.arc ? r.arc[0] : 0, r.arc ? r.arc[1] : TAU);
     ctx.globalAlpha = 1 - k; ctx.strokeStyle = r.col; ctx.lineWidth = r.w; ctx.stroke(); ctx.globalAlpha = 1;
   }
   for (const p of particles) {
@@ -1408,7 +1450,7 @@ function drawHud() {
 
   ctx.font = '700 13px system-ui, sans-serif';
   feed.forEach((e, i) => {
-    const y = touchMode ? (offer ? 124 : 24) + i * 20 : (compact ? 70 : 22) + i * 22;
+    const y = touchMode ? 24 + i * 20 : (compact ? 70 : 22) + i * 22;
     ctx.globalAlpha = Math.min(1, e.t);
     ctx.textAlign = 'right';
     const right = touchMode ? W / 2 + 70 : W - 12;
@@ -1493,6 +1535,7 @@ function drawArrowBar() {
     }
     x += sw + gap;
   }
+  if (offer) return;   // the level-up strip sits here
   ctx.textAlign = 'center'; ctx.fillStyle = '#9aa3b2'; ctx.font = '600 11px system-ui, sans-serif';
   ctx.fillText('Q / E, mouse wheel or 1 2 3 to switch arrows · find more on the ground and at every 3rd level', W / 2, y - 10);
 }
@@ -1558,7 +1601,7 @@ function drawSwapPrompt() {
     ctx.fillText(short, r.x + r.w / 2, r.y + r.h / 2 + fsz * 0.35);
   } else {
     ctx.textAlign = 'center'; ctx.font = '800 14px system-ui, sans-serif';
-    const y = H - 150, text = `R  ·  ${label}`, w = ctx.measureText(text).width + 30;
+    const L = offerLayout(), y = L ? L.y0 - 30 : H - 150, text = `R  ·  ${label}`, w = ctx.measureText(text).width + 30;
     ctx.fillStyle = '#2a1d05ee'; roundRect(W / 2 - w / 2, y - 20, w, 30, 8); ctx.fill();
     ctx.strokeStyle = qcol; ctx.lineWidth = 2; roundRect(W / 2 - w / 2, y - 20, w, 30, 8); ctx.stroke();
     ctx.fillStyle = '#fff'; ctx.fillText(text, W / 2, y);
@@ -1589,7 +1632,7 @@ function drawTouch() {
     ctx.beginPath(); ctx.arc(joy.ox + dx * k, joy.oy + dy * k, 26, 0, TAU); ctx.fillStyle = '#ffffff55'; ctx.fill();
   } else {
     ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff40'; ctx.font = '600 13px system-ui, sans-serif';
-    ctx.fillText('drag here to move', W * 0.22, H - 60);
+    if (!offer) ctx.fillText('drag here to move', W * 0.22, H - 60);
   }
   // aim-and-shoot stick: floats under the thumb anywhere in the bottom-right quarter
   const k = clamp(Math.min(W, H) / 480, 0.62, 1), wcol = WEAPONS[player.weapon].col;
@@ -1609,7 +1652,7 @@ function drawTouch() {
     ctx.strokeStyle = wcol + 'aa'; ctx.lineWidth = 3; ctx.stroke();
     ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 12px system-ui, sans-serif'; ctx.fillText('SHOOT', hx, hy + 2);
     ctx.fillStyle = '#9aa3b2'; ctx.font = '700 8px system-ui, sans-serif'; ctx.fillText('OR ANYWHERE', hx, hy + 15);
-    if (!aimedOnce) {
+    if (!aimedOnce && !offer) {
       ctx.fillStyle = '#ffffff55'; ctx.textAlign = 'left';
       ctx.font = '800 11px system-ui, sans-serif'; ctx.fillText('SHOOT ZONE', W / 2 + 12, H - 38);
       ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText('press · drag to aim · let go', W / 2 + 12, H - 22);
