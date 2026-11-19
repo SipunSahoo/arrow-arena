@@ -16,6 +16,9 @@ const SHOT_CD = 0.45;        // gap after every shot, so tapping cannot out-dama
 const EFFECT_CHARGE = 0.5;   // an arrow's type effect (burn, freeze, poison, chain, blast) needs at least half a draw
 const ORB_TARGET = 150;      // loose XP dots kept on the ground
 const MAX_LEVEL = 20;
+const DASH_CHARGES = 2;      // double dash: two charges
+const DASH_RECHARGE = 1.6;   // seconds to refill one charge
+const DASH_BUFFER = 0.25;    // a press during a dash is kept this long, so a double tap chains
 const BASE_R = 22;
 const sizeFor = level => BASE_R + (level - 1) * 1.0;        // level 20 is almost twice as wide: an easier target
 const speedFor = level => 1 - 0.012 * (level - 1);          // and about a quarter slower
@@ -156,7 +159,7 @@ class Fighter {
     Object.assign(this, {
       x: p.x, y: p.y, vx: 0, vy: 0, maxHp: 100, hp: 100, face: rand(0, TAU), dead: false, deathT: 0,
       stun: 0, ragdoll: 0, spin: 0, spinV: 0, shotCd: 0, draw: 0, drawing: false, recoil: 0,
-      blocking: false, dashT: 0, lock: 0, cd: { dash: 0 },
+      blocking: false, dashT: 0, lock: 0, cd: { dash: 0 }, dashCharges: DASH_CHARGES, dashBuf: 0,
       awaken: 0, slow: 0, flash: 0, iframe: 1.2, lastHitBy: null, lastHitT: 0, guardBreak: 0,
       r: BASE_R, bounty: false, level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0, vision: 0,
       slots: [{ type: 'classic', tier: 1 }], cur: 0, weapon: 'classic', tier: 1,
@@ -505,7 +508,12 @@ function moveBody(f, dt) {
 
 function updateFighter(f, dt, I) {
   const fast = f.awaken > 0, U = f.up;
-  f.cd.dash = Math.max(0, f.cd.dash - dt);
+  // dash charges refill one at a time
+  if (f.dashCharges < DASH_CHARGES) {
+    f.cd.dash -= dt;
+    if (f.cd.dash <= 0) { f.dashCharges++; f.cd.dash = f.dashCharges < DASH_CHARGES ? DASH_RECHARGE : 0; }
+  } else f.cd.dash = 0;
+  if (I.dash) f.dashBuf = DASH_BUFFER; else f.dashBuf = Math.max(0, f.dashBuf - dt);
   f.shotCd = Math.max(0, f.shotCd - dt); f.recoil = Math.max(0, f.recoil - dt);
   f.flash = Math.max(0, f.flash - dt); f.iframe = Math.max(0, f.iframe - dt); f.stun = Math.max(0, f.stun - dt);
   f.lock = Math.max(0, f.lock - dt); f.slow = Math.max(0, f.slow - dt);
@@ -559,11 +567,12 @@ function updateFighter(f, dt, I) {
     const k = 1 - Math.exp(-14 * dt);
     f.vx += (mx * sp - f.vx) * k; f.vy += (my * sp - f.vy) * k;
     if (!f.blocking) {
-      if (I.dash && f.cd.dash <= 0) {
+      if (f.dashBuf > 0 && f.dashCharges > 0) {
         let dx = mx, dy = my;
         if (Math.hypot(dx, dy) < 0.2) { dx = Math.cos(f.face); dy = Math.sin(f.face); }
         const dl = Math.hypot(dx, dy);
-        f.vx = dx / dl * 950; f.vy = dy / dl * 950; f.dashT = 0.17; f.cd.dash = 1.6;
+        f.vx = dx / dl * 950; f.vy = dy / dl * 950; f.dashT = 0.17; f.dashBuf = 0;
+        f.dashCharges--; if (f.cd.dash <= 0) f.cd.dash = DASH_RECHARGE;
         f.iframe = Math.max(f.iframe, 0.2); f.drawing = false; f.draw = 0;
       } else if (I.m1 && f.shotCd <= 0) {
         const rate = (fast ? 2 : 1) * (1 + 0.15 * U.draw) * (f.haste > 0 ? 1.4 : 1) * WEAPONS[f.weapon].draw;
@@ -725,7 +734,7 @@ function botIntent(f, dt) {
   // dodge or shield an arrow that is about to hit
   const threat = incomingArrow(f);
   if (threat && Math.random() < dt * DF.dodge) {
-    if (f.cd.dash <= 0 && Math.random() < DF.dashDodge) {
+    if (f.dashCharges > 0 && Math.random() < DF.dashDodge) {
       const tx = -threat.vy, ty = threat.vx, s = Math.random() < 0.5 ? -1 : 1;
       I.mx = tx * s; I.my = ty * s; I.dash = true; return I;
     }
@@ -1333,7 +1342,7 @@ function roundRect(x, y, w, h, r) {
 }
 
 function cdFraction(id) {
-  if (id === 'dash') return player.cd.dash / 1.6;
+  if (id === 'dash') return player.dashCharges >= DASH_CHARGES ? 0 : player.cd.dash / DASH_RECHARGE;
   return 0;
 }
 
@@ -1447,6 +1456,14 @@ function drawCrosshair() {
   }
 }
 
+// one dot per dash charge
+function dashPips(cx, cy, r) {
+  for (let i = 0; i < DASH_CHARGES; i++) {
+    ctx.beginPath(); ctx.arc(cx + (i - (DASH_CHARGES - 1) / 2) * r * 3, cy, r, 0, TAU);
+    ctx.fillStyle = i < player.dashCharges ? '#ffb020' : '#ffffff26'; ctx.fill();
+  }
+}
+
 function drawArrowBar() {
   const gap = 8, dashW = 76, sw = Math.min(170, (W - 40 - dashW - gap * MAX_SLOTS) / MAX_SLOTS), h = 64;
   const total = dashW + MAX_SLOTS * (sw + gap);
@@ -1454,9 +1471,10 @@ function drawArrowBar() {
   const frac = clamp(cdFraction('dash'), 0, 1);
   ctx.fillStyle = '#000000aa'; roundRect(x, y, dashW, h, 10); ctx.fill();
   if (frac > 0) { ctx.fillStyle = '#ffffff18'; ctx.fillRect(x, y + h * (1 - frac), dashW, h * frac); }
-  ctx.strokeStyle = frac > 0 ? '#3a4357' : '#ffb020'; ctx.lineWidth = 2; roundRect(x, y, dashW, h, 10); ctx.stroke();
-  ctx.textAlign = 'center'; ctx.fillStyle = '#ffb020'; ctx.font = '800 13px system-ui, sans-serif'; ctx.fillText('SPACE', x + dashW / 2, y + 26);
-  ctx.fillStyle = '#e8ecf3'; ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText(frac > 0 ? player.cd.dash.toFixed(1) : 'Dash', x + dashW / 2, y + 46);
+  ctx.strokeStyle = player.dashCharges > 0 ? '#ffb020' : '#3a4357'; ctx.lineWidth = 2; roundRect(x, y, dashW, h, 10); ctx.stroke();
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffb020'; ctx.font = '800 13px system-ui, sans-serif'; ctx.fillText('SPACE', x + dashW / 2, y + 22);
+  ctx.fillStyle = '#e8ecf3'; ctx.font = '600 11px system-ui, sans-serif'; ctx.fillText(frac > 0 ? `Dash ${player.cd.dash.toFixed(1)}` : 'Dash x2', x + dashW / 2, y + 40);
+  dashPips(x + dashW / 2, y + 53, 4);
   x += dashW + gap;
   for (let i = 0; i < MAX_SLOTS; i++) {
     const sl = player.slots[i], on = sl && i === player.cur, col = sl ? WEAPONS[sl.type].col : '#3a4357';
@@ -1602,14 +1620,16 @@ function drawTouch() {
     const held = btnHeld(b.id);
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU);
     ctx.fillStyle = held ? '#ffb02066' : '#00000088'; ctx.fill();
-    ctx.lineWidth = 3; ctx.strokeStyle = frac <= 0 ? '#ffb020aa' : '#3a4357'; ctx.stroke();
+    const ready = b.id === 'dash' ? player.dashCharges > 0 : frac <= 0;
+    ctx.lineWidth = 3; ctx.strokeStyle = ready ? '#ffb020aa' : '#3a4357'; ctx.stroke();
     if (frac > 0) {
       ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + TAU * frac);
       ctx.closePath(); ctx.fillStyle = '#ffffff22'; ctx.fill();
     }
-    ctx.textAlign = 'center'; ctx.fillStyle = frac <= 0 ? '#fff' : '#8a93a3';
+    ctx.textAlign = 'center'; ctx.fillStyle = ready ? '#fff' : '#8a93a3';
     ctx.font = `800 ${b.label.length > 1 ? 11 : 16}px system-ui, sans-serif`;
-    ctx.fillText(b.label, b.x, b.y + 5);
+    ctx.fillText(b.label, b.x, b.y + (b.id === 'dash' ? 2 : 5));
+    if (b.id === 'dash') dashPips(b.x, b.y + b.r * 0.45, Math.max(2.5, b.r * 0.1));
   }
 }
 
