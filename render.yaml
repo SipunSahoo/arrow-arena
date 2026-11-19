@@ -1,0 +1,12 @@
+# Render.com setup for the shared game server (free plan; Singapore is the closest region to India).
+# The website itself stays on GitHub Pages; this runs only server/index.js.
+services:
+  - type: web
+    name: arrow-arena
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /

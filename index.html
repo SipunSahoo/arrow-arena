@@ -17,7 +17,7 @@
   html, body { margin:0; height:100%; background:var(--bg); color:var(--text); overflow:hidden;
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; touch-action:none;
     -webkit-user-select:none; user-select:none; }
-  canvas { display:block; position:fixed; inset:0; }
+  #c { display:block; position:fixed; inset:0; }
   #menu { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
     background:radial-gradient(circle at 50% 40%, #1d2433 0%, #0d0f14 70%); z-index:5; padding:16px; box-sizing:border-box;
     overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
@@ -68,6 +68,24 @@
   @media (max-height:500px) { #menu .box { padding:14px 18px; max-width:640px; } h1 { font-size:22px; } .sub { margin-bottom:8px; } table { font-size:12px; margin-bottom:10px; } td { padding:3px 4px; } button#play { padding:10px; } .touchnote { margin-top:6px; }
     #levelup { justify-content:flex-start; } #cards { margin-bottom:8px; } }
   @media (max-height:500px) { .card { width:170px; min-height:110px; padding:16px 10px 10px; } .card b { font-size:15px; } .card span { font-size:12px; } #lvtitle { font-size:22px; } .lvsub { margin:2px 0 10px; } }
+  .profile { display:flex; gap:14px; align-items:flex-start; margin-bottom:6px; }
+  #preview { width:120px; height:120px; flex:none; border-radius:14px; background:radial-gradient(circle, #24331f 0%, #10141b 75%); border:2px solid #2a3140; }
+  .pform { flex:1; min-width:0; }
+  .pform .plabel { margin:2px 0 4px; }
+  #pname { width:100%; box-sizing:border-box; padding:9px 10px; font:inherit; font-size:16px; font-weight:700; color:var(--text); background:#10141b; border:2px solid #2a3140; border-radius:10px; }
+  #pname:focus { outline:none; border-color:var(--accent); }
+  .swatches { display:flex; flex-wrap:wrap; gap:6px; }
+  .swatches button { width:28px; height:28px; border-radius:50%; border:3px solid transparent; cursor:pointer; padding:0; }
+  .swatches button.on { border-color:#fff; box-shadow:0 0 0 2px #0d0f14 inset; }
+  .gears { display:flex; flex-wrap:wrap; gap:6px; }
+  .gears button { padding:6px 9px; border-radius:9px; border:2px solid #2a3140; background:#10141b; color:var(--text); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+  .gears button.on { border-color:var(--accent); color:var(--accent); }
+  button#playOnline { margin-top:12px; width:100%; padding:14px; font-size:18px; font-weight:800; border:0; border-radius:12px; background:var(--accent); color:#1a1200; cursor:pointer; }
+  button#playOnline:disabled { opacity:.45; cursor:not-allowed; }
+  button.secondary { background:transparent !important; color:var(--accent) !important; border:2px solid var(--accent) !important; }
+  .netnote { color:var(--muted); font-size:12px; margin:6px 0 0; min-height:14px; }
+  details summary { cursor:pointer; margin-top:14px; }
+  @media (max-height:500px) { #preview { width:96px; height:96px; } .profile { gap:10px; } #pname { padding:6px 8px; font-size:15px; } .swatches button { width:24px; height:24px; } button#playOnline { padding:10px; margin-top:8px; } }
 </style>
 </head>
 <body>
@@ -75,10 +93,23 @@
 <div id="menu">
   <div class="box">
     <h1>ARROW <span>ARENA</span></h1>
-    <p class="sub">Prototype 0.9 · start with Classic, find stronger arrows, carry three · free-for-all against 6 bots · working title</p>
+    <p class="sub">Prototype 1.0 · one arena for everyone online, bots fill the empty seats · working title</p>
+    <div class="profile">
+      <canvas id="preview" aria-label="Your archer"></canvas>
+      <div class="pform">
+        <label class="plabel" for="pname">Your name</label>
+        <input id="pname" maxlength="14" autocomplete="off" spellcheck="false" placeholder="Archer">
+        <div class="plabel">Colour</div>
+        <div id="pcolors" class="swatches"></div>
+        <div class="plabel">Headgear</div>
+        <div id="pgear" class="gears"></div>
+      </div>
+    </div>
+    <button id="playOnline">PLAY ONLINE</button>
+    <p id="netNote" class="netnote"></p>
+    <button id="play" class="secondary">PLAY VS BOTS</button>
     <div id="menuPickers"></div>
-    <button id="play">PLAY</button>
-    <div class="plabel">How to play</div>
+    <details><summary class="plabel">How to play</summary>
     <table>
       <tr class="desk"><td>W A S D</td><td>Move</td></tr>
       <tr class="desk"><td>Mouse</td><td>Aim</td></tr>
@@ -92,7 +123,7 @@
       <tr><td>XP dots</td><td>Walk over them to fill the XP bar. Each level (up to 20) offers 3 picks at the top of the screen while you keep playing: pick now or later (Z X C, or click / tap a card). You grow bigger and a little slower as you level</td></tr>
       <tr><td>Power-ups</td><td>Rage (double damage), Haste, Shield bubble, Heal, Vision (see much more of the arena for 15s), and the rare gold Volley (a ring of arrows, then 10s of stronger shots)</td></tr>
       <tr class="desk"><td>Esc</td><td>Pause, and change the difficulty. The game holds your mouse while you play</td></tr>
-    </table>
+    </table></details>
     <p class="touchnote">On a phone or iPad: left thumb moves, buttons on the right fight. Left half of the screen moves you. Press anywhere in the bottom-right quarter, drag to aim, let go to fire. Tap the arrow panel top right to switch. The game goes full screen when you press PLAY.</p>
     <p class="ios-tip" id="iosTip">On iPhone, Safari cannot go full screen: tap Share, then Add to Home Screen, and open the game from that icon.</p>
   </div>
@@ -108,6 +139,8 @@
   <div id="cards"></div>
 </div>
 <script>if (/iPhone|iPod/.test(navigator.userAgent) && !navigator.standalone) document.getElementById("iosTip").style.display = "block";</script>
-<script src="game.js?v=0.9"></script>
+<script src="game.js?v=1.0"></script>
+<script src="net.js?v=1.0"></script>
+<script src="home.js?v=1.0"></script>
 </body>
 </html>

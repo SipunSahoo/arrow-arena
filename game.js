@@ -87,6 +87,12 @@ const POWERUPS = {
 const POWERUP_ROLL = ['rage', 'haste', 'bubble', 'heal', 'vision', 'rage', 'haste', 'bubble', 'heal', 'vision', 'volley'];
 const VISION_ZOOM = 0.72;   // camera scale while VISION is active: about twice the arena area on screen
 
+// Character looks: a body colour and a piece of headgear (all drawn, no images)
+const COLORS = ['#ffb020', '#ff5a5a', '#5ab0ff', '#a77bff', '#4ade80', '#f472b6', '#22d3ee', '#facc15', '#fb923c', '#e8ecf3'];
+const GEARS = { none: 'None', hood: 'Hood', headband: 'Headband', horns: 'Horns', halo: 'Halo', feather: 'Feather cap' };
+const GEAR_IDS = Object.keys(GEARS);
+const cleanName = n => String(n || '').replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 14);
+
 // Arrow types. Everyone carries all of them and switches between them (Q / E, wheel, 1-7, or SWITCH on a phone).
 const WEAPONS = {
   classic: { name: 'Classic', col: '#e8d9b0', desc: 'Balanced. A full draw hits hardest', dmg: 1, speed: 1, draw: 1 },
@@ -126,12 +132,17 @@ const DIFFICULTY = {
 };
 const UI_SIZES = { s: { name: 'Small', m: 0.88 }, m: { name: 'Medium', m: 1 }, l: { name: 'Large', m: 1.14 } };
 const VIEWS = { near: { name: 'Near', m: 1.12 }, normal: { name: 'Normal', m: 1 }, far: { name: 'Far', m: 0.88 } };
-const settings = { difficulty: 'easy', uiSize: 'm', view: 'normal', layout: {} };
+const settings = { difficulty: 'easy', uiSize: 'm', view: 'normal', layout: {}, profile: { name: '', color: '#ffb020', gear: 'none' } };
 try {
   const saved = JSON.parse(localStorage.getItem('arrowArena.settings') || '{}');
   if (DIFFICULTY[saved.difficulty]) settings.difficulty = saved.difficulty;
   if (UI_SIZES[saved.uiSize]) settings.uiSize = saved.uiSize;
   if (VIEWS[saved.view]) settings.view = saved.view;
+  if (saved.profile && typeof saved.profile === 'object') {
+    settings.profile.name = cleanName(saved.profile.name);
+    if (COLORS.includes(saved.profile.color)) settings.profile.color = saved.profile.color;
+    if (GEARS[saved.profile.gear]) settings.profile.gear = saved.profile.gear;
+  }
   if (saved.layout && typeof saved.layout === 'object') {
     for (const [id, o] of Object.entries(saved.layout)) {
       if (['m1', 'dash', 'block', 'panel'].includes(id) && o && isFinite(o.x) && isFinite(o.y) && isFinite(o.s)) settings.layout[id] = { x: clamp(o.x, 0, 1), y: clamp(o.y, 0, 1), s: clamp(o.s, 0.6, 1.6) };
@@ -143,7 +154,7 @@ const D = () => DIFFICULTY[settings.difficulty];
 
 // ---------- canvas ----------
 const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d');
 let W = 0, H = 0, DPR = 1, VIEW = 1, zoom = 1, VS = 1;   // VS = VIEW x zoom, the scale actually drawn
 // UIS: on phones the whole game (arena, HUD, buttons) is drawn this much bigger. W and H are the game's own
 // units (screen pixels / UIS), so every layout rule below stays the same and simply comes out larger.
@@ -202,9 +213,12 @@ function freeSpot(margin = 45) {
   return best || { x: 0, y: 0 };
 }
 
+let fighterSeq = 0;
 class Fighter {
-  constructor(name, color, isBot) {
+  constructor(name, color, isBot, gear) {
+    this.id = ++fighterSeq;
     this.name = name; this.color = color; this.isBot = isBot;
+    this.gear = GEARS[gear] ? gear : isBot ? GEAR_IDS[Math.floor(Math.random() * GEAR_IDS.length)] : 'none';
     this.r = 22; this.kills = 0; this.deaths = 0;
     this.ai = { target: null, retarget: 0, strafe: 1, strafeT: 0, block: 0, flee: 0, want: 0.6, keep: rand(...D().keep), aimErr: 0, wait: 0, switchT: rand(3, 8) };
     this.spawn();
@@ -217,7 +231,7 @@ class Fighter {
       blocking: false, dashT: 0, lock: 0, cd: { dash: 0 }, dashCharges: DASH_CHARGES, dashBuf: 0,
       awaken: 0, slow: 0, flash: 0, iframe: 1.2, lastHitBy: null, lastHitT: 0, guardBreak: 0,
       r: BASE_R, bounty: false, level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0, vision: 0,
-      slots: [{ type: 'classic', tier: 1 }], cur: 0, weapon: 'classic', tier: 1,
+      slots: [{ type: 'classic', tier: 1 }], cur: 0, weapon: 'classic', tier: 1, offer: null, swapCand: null,
       burn: 0, burnTick: 0, burnBy: null, poison: 0, poisonStacks: 0, poisonTick: 0, poisonBy: null, frozen: 0,
     });
   }
@@ -332,7 +346,7 @@ function spawnQuiver() {
 }
 
 function updatePickups(dt) {
-  swapCand = null;
+  for (const f of fighters) f.swapCand = null;
   // loose XP: keep the ground stocked
   let ambient = 0; for (const o of orbs) if (o.ambient) ambient++;
   for (let i = 0; i < 4 && ambient + i < ORB_TARGET; i++) if (Math.random() < 0.5) spawnAmbientOrb();
@@ -357,7 +371,7 @@ function updatePickups(dt) {
       if (q.taken || (q.holdFrom === f && q.holdT > 0)) continue;
       if (Math.hypot(f.x - q.x, f.y - q.y) >= f.r + 24) continue;
       if (quiverFullFor(f, q)) {
-        if (f === player) { if (wantsArrow(f, q.type, q.tier)) swapCand = q; continue; }
+        if (!f.isBot) { if (wantsArrow(f, q.type, q.tier)) f.swapCand = q; continue; }
         if (!botWants(f, q)) continue;
       }
       if (giveArrow(f, q.type, q.tier)) { q.taken = true; ring(q.x, q.y, 8, 60, 0.35, WEAPONS[q.type].col, 4); }
@@ -368,6 +382,7 @@ function updatePickups(dt) {
   quivers = quivers.filter(q => !q.life || q.t < q.life);   // dropped arrows vanish; the ones that spawn stay
   qTimer -= dt;
   if (qTimer <= 0) { qTimer = rand(9, 15); if (quivers.length < 4) spawnQuiver(); }
+  swapCand = player ? player.swapCand : null;
   orbs = orbs.filter(o => !o.taken);
   powerups = powerups.filter(p => !p.taken);
   puTimer -= dt;
@@ -640,7 +655,8 @@ function updateFighter(f, dt, I) {
     particles.push({ x: f.x, y: f.y, vx: 0, vy: 0, t: 0, life: 0.25, col: f.color, size: f.r * 0.8, ghost: true });
   }
 
-  if (!f.dead && I.swap && f === player && swapCand && !swapCand.taken && giveArrow(f, swapCand.type, swapCand.tier)) { swapCand.taken = true; ring(swapCand.x, swapCand.y, 8, 60, 0.35, WEAPONS[swapCand.type].col, 4); swapCand = null; }
+  const sc = f.swapCand;
+  if (!f.dead && I.swap && !f.isBot && sc && !sc.taken && giveArrow(f, sc.type, sc.tier)) { sc.taken = true; ring(sc.x, sc.y, 8, 60, 0.35, WEAPONS[sc.type].col, 4); f.swapCand = null; if (f === player) swapCand = null; }
   if (!f.dead && I.slot !== undefined) selectSlot(f, I.slot);
   if (!f.dead && I.slotStep) selectSlot(f, (f.cur + I.slotStep + f.slots.length) % f.slots.length);
   f.blocking = !!I.block && f.canAct;
@@ -785,7 +801,7 @@ function botIntent(f, dt) {
     for (const t of fighters) {
       if (t === f || t.dead) continue;
       // on easier settings bots pick on each other more than on you
-      const d = dist(f, t) * rand(0.7, 1.3) * (t === player ? DF.playerBias : 1) * (t.bounty ? 0.45 : 1);
+      const d = dist(f, t) * rand(0.7, 1.3) * (!t.isBot ? DF.playerBias : 1) * (t.bounty ? 0.45 : 1);
       if (d < bd) { bd = d; best = t; }
     }
     ai.target = best; ai.retarget = rand(3, 6); ai.aimErr = rand(-DF.aim, DF.aim);
@@ -878,6 +894,7 @@ function setPaused(on) {
   if (on) {
     mouse.l = mouse.r = false; keys.clear(); joy.id = null; aimStick.id = null; aimStick.pendingT = 0; cardTouch.id = null; btnTouches.clear();
     if (isLocked()) document.exitPointerLock();   // a held mouse would send every click to the game, not the menu
+    if (net) net.neutral();   // online the arena keeps going: stand still while the menu is open
     buildPickers(document.getElementById('pausePickers'));
   }
 }
@@ -1196,36 +1213,38 @@ function playerIntent(dt) {
 const levelEl = document.getElementById('levelup');
 const cardsEl = document.getElementById('cards');
 let cardChoices = [];
-function arrowOffer(level) {
+function arrowOffer(level, f = player) {
   // a new type you don't carry, or (sometimes, or when you carry everything) a better tier of one you do
-  const specials = player.slots.filter(sl => sl.type !== 'classic');
+  const specials = f.slots.filter(sl => sl.type !== 'classic');
   const upgradable = specials.filter(sl => sl.tier < 3);
   if (upgradable.length && (Math.random() < 0.35 || specials.length >= MAX_SLOTS - 1)) {
     const sl = upgradable[Math.floor(Math.random() * upgradable.length)];
     return { arrow: true, type: sl.type, tier: sl.tier + 1 };
   }
-  return { arrow: true, type: rollType(player.slots.map(sl => sl.type)), tier: Math.max(rollTier(level), level >= 9 ? 2 : 1) };
+  return { arrow: true, type: rollType(f.slots.map(sl => sl.type)), tier: Math.max(rollTier(level), level >= 9 ? 2 : 1) };
 }
-function buildOffer() {
-  const lvl = player.level - player.pendingChoices + 1;
-  const opts = availableUpgrades(player), cards = [];
-  if (lvl % 3 === 0) cards.push(arrowOffer(lvl));
+function buildOffer(f = player) {
+  const lvl = f.level - f.pendingChoices + 1;
+  const opts = availableUpgrades(f), cards = [];
+  if (lvl % 3 === 0) cards.push(arrowOffer(lvl, f));
   while (cards.length < Math.min(3, opts.length + (lvl % 3 === 0 ? 1 : 0))) {
     const u = opts[Math.floor(Math.random() * opts.length)];
     if (!cards.includes(u)) cards.push(u);
   }
   return cards.length ? { level: lvl, cards } : null;
 }
-function ensureOffer() {
-  if (player.dead || player.pendingChoices <= 0) { offer = null; return; }
-  if (!offer) { offer = buildOffer(); if (!offer) player.pendingChoices = 0; }
+function ensureOffer(f = player) {
+  if (f.dead || f.pendingChoices <= 0) f.offer = null;
+  else if (!f.offer) { f.offer = buildOffer(f); if (!f.offer) f.pendingChoices = 0; }
+  if (f === player) offer = f.offer;
 }
-function pickOffer(i) {
-  if (!offer || !offer.cards[i]) return false;
-  const c = offer.cards[i];
-  if (c.arrow) giveArrow(player, c.type, c.tier);
-  else { applyUpgrade(player, c.id); popText(player.x, player.y - 46, c.name, UP_COL[c.id], true); }
-  player.pendingChoices--; offer = null; ensureOffer();
+function pickOffer(i, f = player) {
+  if (f === player && net) return net.pick(i);   // online: the server applies the pick
+  if (!f.offer || !f.offer.cards[i]) return false;
+  const c = f.offer.cards[i];
+  if (c.arrow) giveArrow(f, c.type, c.tier);
+  else { applyUpgrade(f, c.id); popText(f.x, f.y - 46, c.name, UP_COL[c.id], true); }
+  f.pendingChoices--; f.offer = null; ensureOffer(f);
   return true;
 }
 // where the strip sits: bottom centre. Phone: between the thumbs, clear of DASH. Laptop: just above the arrow bar.
@@ -1291,7 +1310,8 @@ function drawOffer() {
 function newGame() {
   fighters = []; arrows = []; stuck = []; particles = []; rings = []; texts = []; feed = [];
   orbs = []; powerups = []; puTimer = 3; quivers = []; qTimer = 6;
-  player = new Fighter('You', '#ffb020', false);
+  const pr = settings.profile;
+  player = new Fighter(pr.name || 'You', pr.color, false, pr.gear);
   fighters.push(player);
   const bots = [['Raze', '#ff5a5a'], ['Nova', '#5ab0ff'], ['Kuro', '#a77bff'], ['Blitz', '#4ade80'], ['Vex', '#f472b6'], ['Sora', '#22d3ee']];
   for (const [n, c] of bots) fighters.push(new Fighter(n, c, true));
@@ -1443,6 +1463,44 @@ function tierPips(x, y, tier, col, r = 3) {
   for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(x + i * (r * 3), y, r, 0, TAU); ctx.fillStyle = i < tier ? col : '#ffffff26'; ctx.fill(); }
 }
 
+// headgear, drawn in the archer's own frame (facing +x, body radius R)
+function shade(hex, k) {
+  const n = parseInt(hex.slice(1), 16), c = v => Math.max(0, Math.min(255, Math.round(v * k)));
+  return '#' + [c(n >> 16), c((n >> 8) & 255), c(n & 255)].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function drawGear(gear, R, col) {
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#0b0d12';
+  if (gear === 'hood') {
+    ctx.beginPath(); ctx.arc(0, 0, R + 1, Math.PI * 0.45, Math.PI * 1.55); ctx.closePath();
+    ctx.fillStyle = shade(col, 0.55); ctx.fill(); ctx.stroke();
+  } else if (gear === 'headband') {
+    ctx.strokeStyle = '#e03b3b'; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(0, 0, R - 3, Math.PI * 0.55, Math.PI * 1.45, true); ctx.stroke();
+    ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-R + 2, -3); ctx.quadraticCurveTo(-R - 8, -10, -R - 14, -4); ctx.moveTo(-R + 2, 3); ctx.quadraticCurveTo(-R - 8, 8, -R - 15, 6); ctx.stroke();
+  } else if (gear === 'horns') {
+    ctx.fillStyle = '#f1e7d0';
+    for (const sg of [-1, 1]) { ctx.beginPath(); ctx.moveTo(4, sg * (R - 6)); ctx.quadraticCurveTo(14, sg * (R + 4), 20, sg * (R + 10)); ctx.lineTo(0, sg * (R - 1)); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  } else if (gear === 'halo') {
+    ctx.strokeStyle = '#ffe680'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, R + 6, 0, TAU); ctx.stroke();
+  } else if (gear === 'feather') {
+    ctx.beginPath(); ctx.arc(-2, 0, R * 0.62, 0, TAU); ctx.fillStyle = shade(col, 0.6); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#ff5a5a'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-6, -R * 0.4); ctx.quadraticCurveTo(-R, -R * 0.9, -R - 12, -R * 0.5); ctx.stroke(); ctx.lineCap = 'butt';
+  }
+}
+// draws an archer on another canvas (the home-screen preview)
+function drawPreview(cv, look, ang) {
+  const g = cv.getContext('2d'), d = window.devicePixelRatio || 1;
+  if (cv.width !== cv.clientWidth * d) { cv.width = cv.clientWidth * d; cv.height = cv.clientHeight * d; }
+  const saved = ctx; ctx = g;
+  g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  const s = cv.clientWidth / 110;
+  g.translate(cv.clientWidth / 2, cv.clientHeight / 2 + 6); g.scale(s, s);
+  const f = { x: 0, y: 0, r: BASE_R, face: ang, spin: 0, color: look.color, gear: look.gear, weapon: 'classic', recoil: 0, draw: 0.6, drawing: true, hp: 100, maxHp: 100, name: '', level: 1, iframe: 0, preview: true };
+  drawFighter(f);
+  ctx = saved;
+}
+
 function drawFighter(f) {
   ctx.save();
   if (f.dead) ctx.globalAlpha = Math.max(0, Math.min(1, f.deathT / 1.5)) * 0.8;
@@ -1483,6 +1541,7 @@ function drawFighter(f) {
   ctx.fillStyle = f.color; ctx.strokeStyle = '#0b0d12'; ctx.lineWidth = 2.5;
   ctx.beginPath(); ctx.arc(bowX + bowR, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.arc(tipX - pull, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
+  drawGear(f.gear, R, f.color);
   if (f.flash > 0) { ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = '#ffffffcc'; ctx.fill(); }
   if (f.frozen > 0) { ctx.beginPath(); ctx.arc(0, 0, R + 3, 0, TAU); ctx.fillStyle = '#bfe9ffaa'; ctx.fill(); ctx.strokeStyle = '#e6f8ff'; ctx.lineWidth = 2; ctx.stroke(); }
   else if (f.slow > 0) { ctx.beginPath(); ctx.arc(0, 0, R + 2, 0, TAU); ctx.strokeStyle = '#9be7ff88'; ctx.lineWidth = 2; ctx.stroke(); }
@@ -1492,7 +1551,7 @@ function drawFighter(f) {
   }
   ctx.restore();
 
-  if (f.dead) return;
+  if (f.dead || f.preview) return;
   const bx = f.x - 26, by = f.y - f.r - 22;
   ctx.fillStyle = '#000000aa'; ctx.fillRect(bx - 1, by - 1, 54, 7);
   ctx.fillStyle = f.hp > f.maxHp * 0.5 ? '#4ade80' : f.hp > f.maxHp * 0.25 ? '#facc15' : '#ef4444';
@@ -1887,6 +1946,30 @@ function drawTouch() {
   }
 }
 
+// ---------- simulation step (offline here, and on the server for everyone) ----------
+function simStep(dt, intents) {
+  fighters.forEach((f, i) => updateFighter(f, dt, intents[i]));
+  separate();
+  updateArrows(dt);
+  updatePickups(dt);
+  for (const f of fighters) if (!f.isBot) ensureOffer(f);
+  updateBounty();
+}
+// cosmetic effects age and fade (never on the server)
+function fxStep(dt) {
+  for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; if (!p.streak) { p.vx *= 0.92; p.vy *= 0.92; } }
+  particles = particles.filter(p => p.t < p.life);
+  for (const r of rings) r.t += dt;
+  rings = rings.filter(r => r.t < r.life);
+  for (const t of texts) t.t += dt;
+  texts = texts.filter(t => t.t < t.life);
+  for (const e of feed) e.t -= dt;
+  feed = feed.filter(e => e.t > 0);
+  for (const b of bolts) b.t += dt;
+  bolts = bolts.filter(b => b.t < 0.18);
+}
+let net = null;   // set by net.js while playing online
+
 // ---------- main loop ----------
 let last = performance.now();
 let cursorHidden = false;
@@ -1895,27 +1978,16 @@ function frame(now) {
   const hide = running && !touchMode && !paused && !choosing;
   if (hide !== cursorHidden) { canvas.style.cursor = hide ? 'none' : 'default'; cursorHidden = hide; }
   if (running && !paused && !choosing) {
-    if (hitStop > 0) hitStop -= dt;
+    if (net) { net.step(dt); fxStep(dt); }
+    else if (hitStop > 0) hitStop -= dt;
     else {
       const intents = fighters.map(f => (f === player ? playerIntent(dt) : botIntent(f, dt)));
       pressed.clear(); btnPressed.clear();
-      fighters.forEach((f, i) => updateFighter(f, dt, intents[i]));
-      separate();
-      updateArrows(dt);
-      updatePickups(dt);
-      for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; if (!p.streak) { p.vx *= 0.92; p.vy *= 0.92; } }
-      particles = particles.filter(p => p.t < p.life);
-      for (const r of rings) r.t += dt;
-      rings = rings.filter(r => r.t < r.life);
-      for (const t of texts) t.t += dt;
-      texts = texts.filter(t => t.t < t.life);
-      for (const e of feed) e.t -= dt;
-      feed = feed.filter(e => e.t > 0);
-      for (const b of bolts) b.t += dt;
-      bolts = bolts.filter(b => b.t < 0.18);
+      simStep(dt, intents);
+      fxStep(dt);
     }
-    ensureOffer();
-    updateBounty();
+  }
+  if (running && !paused && !choosing && player && player.x !== undefined) {   // online, the first picture may not have arrived yet
     // the camera leans toward the aim so you can see further ahead
     const lean = player.dead ? 0 : 60 + 60 * player.draw;
     const tx = player.x + Math.cos(player.face) * lean, ty = player.y + Math.sin(player.face) * lean;
@@ -1929,7 +2001,7 @@ function frame(now) {
 
   ctx.setTransform(DPR * UIS, 0, 0, DPR * UIS, 0, 0);
   ctx.clearRect(0, 0, W, H);
-  if (player) {
+  if (player && player.x !== undefined) {
     const sx = (Math.random() - 0.5) * shake, sy = (Math.random() - 0.5) * shake;
     ctx.save();
     ctx.translate(W / 2 + sx, H / 2 + sy); ctx.scale(VS, VS); ctx.translate(-cam.x, -cam.y);
@@ -1941,11 +2013,14 @@ function frame(now) {
 }
 
 newGame();
-document.getElementById('play').addEventListener('click', () => {
+// hide the home screen and play (home.js calls these from the two PLAY buttons)
+function grabScreen() {   // must run inside the button press: browsers only allow full screen and mouse capture then
+  if (touchMode || window.matchMedia('(pointer: coarse)').matches) enterFullscreen();
+  lockPointer();
+}
+function startRun() {
   document.getElementById('menu').style.display = 'none';
   running = true; last = performance.now();
   mouse.x = W / 2 + 120; mouse.y = H / 2;
-  if (touchMode || window.matchMedia('(pointer: coarse)').matches) enterFullscreen();
-  lockPointer();
-});
+}
 requestAnimationFrame(frame);
