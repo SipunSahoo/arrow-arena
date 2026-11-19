@@ -1,5 +1,6 @@
 'use strict';
-// Arrow Arena prototype 0.3: top-down free-for-all archery brawler with XP, levels, upgrades and power-ups.
+// Arrow Arena prototype 0.4: top-down free-for-all archery brawler with XP, levels, upgrades, power-ups,
+// six arrow types and three bot difficulties.
 // Plain canvas, no libraries.
 
 const TAU = Math.PI * 2;
@@ -20,7 +21,7 @@ const SKILLS = [
   { key: 's1', label: '1', name: 'Triple Shot', cd: 6 },
   { key: 's2', label: '2', name: 'Piercing', cd: 9 },
   { key: 's3', label: '3', name: 'Arrow Rain', cd: 12 },
-  { key: 's4', label: '4', name: 'Blast Arrow', cd: 9 },
+  { key: 's4', label: '4', name: 'Bomb Arrow', cd: 9 },
 ];
 
 const UPGRADES = [
@@ -47,6 +48,32 @@ const POWERUPS = {
   bubble: { col: '#7ad7ff', label: 'SHIELD', sym: '◆', note: 'absorbs the next 40 damage' },
   heal: { col: '#4ade80', label: 'HEAL', sym: '+', note: '+40 HP' },
 };
+
+// Arrow types: the bow's normal shots. Skills stay the same for everyone.
+const WEAPONS = {
+  classic: { name: 'Classic', col: '#e8d9b0', desc: 'Balanced. A full draw hits hardest', dmg: 1, speed: 1, draw: 1 },
+  fire: { name: 'Fire', col: '#ff6a00', desc: 'Sets enemies on fire: extra damage over 3 seconds', dmg: 0.85, speed: 1, draw: 1 },
+  frost: { name: 'Frost', col: '#9be7ff', desc: 'Slows on hit. A full draw freezes them solid', dmg: 0.85, speed: 1, draw: 1 },
+  blast: { name: 'Blast', col: '#ff8a3d', desc: 'Explodes where it lands. Slower to draw', dmg: 0.65, speed: 0.9, draw: 0.85 },
+  poison: { name: 'Poison', col: '#7bd85c', desc: 'Poison that stacks up to 3 times', dmg: 0.8, speed: 1, draw: 1.05 },
+  lightning: { name: 'Lightning', col: '#ffe95a', desc: 'Very fast. Jumps to a second enemy', dmg: 0.8, speed: 1.25, draw: 1 },
+};
+const WEAPON_IDS = Object.keys(WEAPONS);
+
+// How the bots play. "hard" is how they played before 0.4.
+const DIFFICULTY = {
+  easy: { name: 'Easy', aim: 0.32, lead: 0.3, dodge: 1.2, dashDodge: 0.35, block: 0.5, skill: 0.3, wait: [0.4, 1.0], full: 0.2, dmg: 0.65, playerBias: 1.6, keep: [300, 420] },
+  normal: { name: 'Normal', aim: 0.2, lead: 0.55, dodge: 3.5, dashDodge: 0.5, block: 0.8, skill: 0.6, wait: [0.15, 0.5], full: 0.35, dmg: 0.85, playerBias: 1.25, keep: [260, 380] },
+  hard: { name: 'Hard', aim: 0.12, lead: 0.8, dodge: 7, dashDodge: 0.6, block: 1, skill: 1, wait: [0, 0.12], full: 0.45, dmg: 1, playerBias: 1, keep: [240, 340] },
+};
+const settings = { weapon: 'classic', difficulty: 'easy' };
+try {
+  const saved = JSON.parse(localStorage.getItem('arrowArena.settings') || '{}');
+  if (WEAPONS[saved.weapon]) settings.weapon = saved.weapon;
+  if (DIFFICULTY[saved.difficulty]) settings.difficulty = saved.difficulty;
+} catch (e) { /* storage blocked: defaults are fine */ }
+function saveSettings() { try { localStorage.setItem('arrowArena.settings', JSON.stringify(settings)); } catch (e) { /* ignore */ } }
+const D = () => DIFFICULTY[settings.difficulty];
 
 // ---------- canvas ----------
 const canvas = document.getElementById('c');
@@ -76,7 +103,7 @@ for (let i = 0; i < 20; i++) {
 
 // ---------- world state ----------
 let fighters = [], arrows = [], stuck = [], rains = [], particles = [], rings = [], texts = [], feed = [];
-let orbs = [], powerups = [], puTimer = 3;
+let orbs = [], powerups = [], puTimer = 3, bolts = [];
 let hitStop = 0, shake = 0, running = false, paused = false, choosing = false;
 let player = null;
 const cam = { x: 0, y: 0 };
@@ -99,7 +126,8 @@ class Fighter {
   constructor(name, color, isBot) {
     this.name = name; this.color = color; this.isBot = isBot;
     this.r = 22; this.kills = 0; this.deaths = 0;
-    this.ai = { target: null, retarget: 0, strafe: 1, strafeT: 0, block: 0, flee: 0, want: 0.6, keep: rand(240, 340), aimErr: 0 };
+    this.weapon = isBot ? WEAPON_IDS[Math.floor(Math.random() * WEAPON_IDS.length)] : settings.weapon;
+    this.ai = { target: null, retarget: 0, strafe: 1, strafeT: 0, block: 0, flee: 0, want: 0.6, keep: rand(...D().keep), aimErr: 0, wait: 0 };
     this.spawn();
   }
   spawn() {
@@ -110,6 +138,7 @@ class Fighter {
       blocking: false, dashT: 0, lock: 0, cd: { dash: 0, s1: 0, s2: 0, s3: 0, s4: 0 },
       ult: 0, awaken: 0, slow: 0, flash: 0, iframe: 1.2, lastHitBy: null, lastHitT: 0, guardBreak: 0,
       level: 1, xp: 0, xpTotal: 0, up: freshUpgrades(), pendingChoices: 0, rage: 0, haste: 0, bubble: 0,
+      burn: 0, burnTick: 0, burnBy: null, poison: 0, poisonStacks: 0, poisonTick: 0, poisonBy: null, frozen: 0,
     });
   }
   get canAct() { return !this.dead && this.stun <= 0 && this.ragdoll <= 0 && this.dashT <= 0 && this.lock <= 0; }
@@ -206,15 +235,16 @@ function applyHit(a, t, o) {
   if (t.dead || t.iframe > 0) return false;
   const dir = o.dir !== undefined ? o.dir : Math.atan2(t.y - a.y, t.x - a.x);
   const mult = (1 + 0.15 * a.up.dmg) * (a.rage > 0 ? 2 : 1) * (a.awaken > 0 ? 1.3 : 1);
-  let dmg = o.dmg * mult, kb = o.kb || 0, stun = o.stun || 0, rag = o.ragdoll || 0;
+  let dmg = o.dmg * mult * (a.isBot ? D().dmg : 1), kb = o.kb || 0, stun = o.stun || 0, rag = o.ragdoll || 0;
   let col = a.rage > 0 ? '#ff7a7a' : '#ffd27a';
+  let blocked = false;
   const shieldFacing = !o.unblockable && angDiff(t.face, dir + Math.PI) < 1.3;
   if (t.blocking && shieldFacing) {
     if (o.guardBreak) {
       t.blocking = false; t.stun = 1.0; t.guardBreak = 1.0; dmg *= 0.6; kb = 200; rag = 0;
       popText(t.x, t.y - 40, 'SHIELD BROKEN', '#ff5a5a', true); ring(t.x, t.y, 10, 70, 0.35, '#ff5a5a');
     } else {
-      dmg *= 0.12; kb *= 0.3; stun = 0; rag = 0; col = '#7ad7ff';
+      dmg *= 0.12; kb *= 0.3; stun = 0; rag = 0; col = '#7ad7ff'; blocked = true;
       t.ult = Math.min(100, t.ult + 3);
     }
   }
@@ -244,7 +274,51 @@ function applyHit(a, t, o) {
     shake = Math.max(shake, rag > 0 ? 10 : dmg >= 13 ? 6 : 3);
   }
   if (t.hp <= 0) killFighter(t, a);
-  return true;
+  return blocked ? 'blocked' : true;
+}
+
+// Damage from burning or poison: no knockback, no flash.
+function dotHit(t, src, amount, col) {
+  if (t.dead) return;
+  let dmg = amount * (src ? (1 + 0.15 * src.up.dmg) * (src.isBot ? D().dmg : 1) : 1);
+  if (t.bubble > 0) { const soak = Math.min(t.bubble, dmg); t.bubble -= soak; dmg -= soak; }
+  if (dmg <= 0) return;
+  t.hp -= dmg;
+  popText(t.x + rand(-14, 14), t.y - 26, Math.max(1, Math.round(dmg)).toString(), col);
+  if (src && src !== t) { src.ult = Math.min(100, src.ult + dmg); t.lastHitBy = src; t.lastHitT = Math.max(t.lastHitT, 3); }
+  if (t.hp <= 0) killFighter(t, src);
+}
+
+// What an arrow's type does after it lands on someone.
+function weaponOnHit(a, t) {
+  const src = a.owner;
+  if (a.weapon === 'fire') { t.burn = 3; t.burnBy = src; t.burnTick = Math.min(t.burnTick || 0.5, 0.5); }
+  if (a.weapon === 'frost') {
+    t.slow = Math.max(t.slow, 1.3);
+    if (a.charge >= 0.98 && !t.dead) { t.stun = Math.max(t.stun, 0.8); t.frozen = 0.8; t.drawing = false; t.draw = 0; ring(t.x, t.y, 10, 40, 0.3, '#9be7ff'); }
+  }
+  if (a.weapon === 'poison') { t.poison = 4; t.poisonBy = src; t.poisonStacks = Math.min(3, t.poisonStacks + 1); }
+  if (a.weapon === 'lightning') {
+    let best = null, bd = 210;
+    for (const n of fighters) {
+      if (n === src || n === t || n.dead) continue;
+      const d = Math.hypot(n.x - t.x, n.y - t.y); if (d < bd) { bd = d; best = n; }
+    }
+    if (best) {
+      bolts.push({ x1: t.x, y1: t.y, x2: best.x, y2: best.y, t: 0 });
+      applyHit(src, best, { dmg: a.dmg * 0.6, kb: 60, stun: 0.15, dir: Math.atan2(best.y - t.y, best.x - t.x) });
+    }
+  }
+}
+
+// The Blast arrow type: a small explosion wherever it lands.
+function miniBlast(x, y, owner, charge, skip) {
+  ring(x, y, 6, 70, 0.28, '#ff8a3d', 5);
+  sparks(x, y, '#ff8a3d', 12, 300);
+  for (const t of fighters) {
+    if (t === owner || t === skip || t.dead) continue;
+    if (Math.hypot(t.x - x, t.y - y) < 70 + t.r) applyHit(owner, t, { dmg: 4 + 6 * charge, kb: 300, stun: 0.2, dir: Math.atan2(t.y - y, t.x - x), unblockable: true });
+  }
 }
 
 function killFighter(t, a) {
@@ -268,15 +342,18 @@ function spawnArrow(f, ang, o) {
     dmg: o.dmg, kb: o.kb || 0, stun: o.stun || 0, ragdoll: o.ragdoll || 0, slow: o.slow || 0,
     pierce: !!o.pierce, pierceLeft: o.pierceLeft || 0, bounces: o.bounces ?? f.up.ricochet,
     guardBreak: !!o.guardBreak, blast: !!o.blast, kind: o.kind || 'normal', hit: new Set(),
+    weapon: o.weapon || null, charge: o.charge || 0,
   });
 }
 
 function fireBow(f, charge) {
-  const c = clamp(charge, 0.15, 1), full = c >= 0.98, U = f.up;
+  const c = clamp(charge, 0.15, 1), full = c >= 0.98, U = f.up, Wp = WEAPONS[f.weapon];
   const base = {
-    speed: (650 + 800 * c) * (1 + 0.2 * U.range), life: 0.85 * (1 + 0.15 * U.range),
-    dmg: 5 + 11 * c, kb: full ? 320 : 90 * c, stun: full ? 0.3 : 0.12, pierceLeft: U.pierce,
-    slow: full && U.ice ? 1.5 : 0, kind: f.rage > 0 ? 'rage' : f.awaken > 0 ? 'gold' : U.ice && full ? 'ice' : full ? 'full' : 'normal',
+    speed: (650 + 800 * c) * (1 + 0.2 * U.range) * Wp.speed, life: 0.85 * (1 + 0.15 * U.range),
+    dmg: (5 + 11 * c) * Wp.dmg, kb: full ? 320 : 90 * c, stun: full ? 0.3 : 0.12, pierceLeft: U.pierce,
+    slow: full && U.ice ? 1.5 : 0, weapon: f.weapon, charge: c,
+    bounces: f.weapon === 'blast' ? 0 : U.ricochet,
+    kind: f.rage > 0 ? 'rage' : f.awaken > 0 ? 'gold' : f.weapon !== 'classic' ? f.weapon : U.ice && full ? 'ice' : full ? 'full' : 'normal',
   };
   spawnArrow(f, f.face, base);
   for (let i = 1; i <= U.multi; i++) spawnArrow(f, f.face + (i % 2 ? 1 : -1) * 0.13 * Math.ceil(i / 2), { ...base, dmg: base.dmg * 0.7 });
@@ -372,6 +449,18 @@ function updateFighter(f, dt, I) {
     return;
   }
   if (U.regen) f.hp = Math.min(f.maxHp, f.hp + 1.5 * U.regen * dt);
+  f.frozen = Math.max(0, f.frozen - dt);
+  if (f.burn > 0) {
+    f.burn -= dt; f.burnTick -= dt;
+    if (Math.random() < dt * 25) particles.push({ x: f.x + rand(-14, 14), y: f.y + rand(-14, 14), vx: rand(-15, 15), vy: rand(-90, -50), t: 0, life: 0.35, col: Math.random() < 0.5 ? '#ff6a00' : '#ffb020', size: rand(2, 4) });
+    if (f.burnTick <= 0) { f.burnTick = 0.5; dotHit(f, f.burnBy, 1.6, '#ff8a3d'); if (f.dead) return; }
+  }
+  if (f.poison > 0) {
+    f.poison -= dt; f.poisonTick -= dt;
+    if (Math.random() < dt * 10) particles.push({ x: f.x + rand(-14, 14), y: f.y + rand(-14, 14), vx: 0, vy: rand(-40, -20), t: 0, life: 0.5, col: '#7bd85c', size: rand(2, 4) });
+    if (f.poisonTick <= 0) { f.poisonTick = 0.5; dotHit(f, f.poisonBy, 0.9 * f.poisonStacks, '#7bd85c'); if (f.dead) return; }
+    if (f.poison <= 0) f.poisonStacks = 0;
+  }
   if (f.dashT > 0) {
     f.dashT -= dt;
     particles.push({ x: f.x, y: f.y, vx: 0, vy: 0, t: 0, life: 0.25, col: f.color, size: f.r * 0.8, ghost: true });
@@ -402,7 +491,7 @@ function updateFighter(f, dt, I) {
       else if (I.s3 && f.cd.s3 <= 0) skillRain(f, I.tx ?? f.x + Math.cos(f.face) * 300, I.ty ?? f.y + Math.sin(f.face) * 300);
       else if (I.s4 && f.cd.s4 <= 0) skillBlast(f);
       else if (I.m1 && f.shotCd <= 0) {
-        const rate = (fast ? 2 : 1) * (1 + 0.15 * U.draw) * (f.haste > 0 ? 1.4 : 1);
+        const rate = (fast ? 2 : 1) * (1 + 0.15 * U.draw) * (f.haste > 0 ? 1.4 : 1) * WEAPONS[f.weapon].draw;
         f.drawing = true; f.draw = Math.min(1, f.draw + dt * rate / DRAW_TIME);
       } else if (f.drawing && !I.m1) {
         fireBow(f, f.draw); f.drawing = false; f.draw = 0;
@@ -454,6 +543,7 @@ function updateArrows(dt) {
         }
         a.life = 0; a.done = true;
         if (a.blast) explode(a.x, a.y, a.owner);
+        else if (a.weapon === 'blast') miniBlast(a.x, a.y, a.owner, a.charge, null);
         else { stuck.push({ x: a.x, y: a.y, ang: a.ang, t: 0, life: 4, kind: a.kind }); sparks(a.x, a.y, '#c9b38a', 4, 120); }
         break;
       }
@@ -463,7 +553,9 @@ function updateArrows(dt) {
           a.hit.add(t);
           if (t.iframe > 0) continue;   // dodged: the arrow flies on
           if (a.blast) { a.life = 0; a.done = true; explode(a.x, a.y, a.owner); break; }
-          applyHit(a.owner, t, { dmg: a.dmg, kb: a.kb, stun: a.stun, ragdoll: a.ragdoll, slow: a.slow, guardBreak: a.guardBreak, dir: a.ang });
+          const res = applyHit(a.owner, t, { dmg: a.dmg, kb: a.kb, stun: a.stun, ragdoll: a.ragdoll, slow: a.slow, guardBreak: a.guardBreak, dir: a.ang });
+          if (res === true && a.weapon) weaponOnHit(a, t);
+          if (a.weapon === 'blast') { miniBlast(a.x, a.y, a.owner, a.charge, t); a.life = 0; a.done = true; break; }
           if (a.pierce) continue;
           if (a.pierceLeft > 0) { a.pierceLeft--; continue; }
           a.life = 0; a.done = true; break;
@@ -471,6 +563,7 @@ function updateArrows(dt) {
       }
     }
     if (a.kind === 'pierce' && Math.random() < 0.8) particles.push({ x: a.x, y: a.y, vx: 0, vy: 0, t: 0, life: 0.25, col: '#8fe3ff', size: 3 });
+    if (a.weapon && a.weapon !== 'classic' && Math.random() < 0.6) particles.push({ x: a.x, y: a.y, vx: rand(-25, 25), vy: rand(-25, 25), t: 0, life: 0.25, col: WEAPONS[a.weapon].col, size: 3 });
     if (a.kind === 'blast' && Math.random() < 0.8) particles.push({ x: a.x, y: a.y, vx: rand(-30, 30), vy: rand(-30, 30), t: 0, life: 0.3, col: '#ff8a3d', size: 4 });
   }
   // a blast arrow that runs out of flight explodes where it lands
@@ -524,17 +617,18 @@ function nearestPickup(f, list, range) {
 }
 
 function botIntent(f, dt) {
-  const ai = f.ai, I = { mx: 0, my: 0, aim: f.face };
+  const ai = f.ai, I = { mx: 0, my: 0, aim: f.face }, DF = D();
   if (f.dead) return I;
-  ai.retarget -= dt;
+  ai.retarget -= dt; ai.wait -= dt;
   if (!ai.target || ai.target.dead || ai.retarget <= 0) {
     let best = null, bd = 1e9;
     for (const t of fighters) {
       if (t === f || t.dead) continue;
-      const d = dist(f, t) * rand(0.7, 1.3);
+      // on easier settings bots pick on each other more than on you
+      const d = dist(f, t) * rand(0.7, 1.3) * (t === player ? DF.playerBias : 1);
       if (d < bd) { bd = d; best = t; }
     }
-    ai.target = best; ai.retarget = rand(3, 6); ai.aimErr = rand(-0.12, 0.12);
+    ai.target = best; ai.retarget = rand(3, 6); ai.aimErr = rand(-DF.aim, DF.aim);
   }
   if (f.lastHitBy && f.lastHitBy !== f && !f.lastHitBy.dead && f.lastHitT > 4.6) ai.target = f.lastHitBy;
   const t = ai.target;
@@ -544,12 +638,12 @@ function botIntent(f, dt) {
   // lead the shot: aim where the target will be when the arrow arrives
   const speed = (650 + 800 * Math.max(f.draw, 0.3)) * (1 + 0.2 * f.up.range);
   const tt = d / speed;
-  const lx = t.x + t.vx * tt * 0.8, ly = t.y + t.vy * tt * 0.8;
+  const lx = t.x + t.vx * tt * DF.lead, ly = t.y + t.vy * tt * DF.lead;
   I.aim = Math.atan2(ly - f.y, lx - f.x) + ai.aimErr * (0.5 + Math.random() * 0.5);
   I.tx = t.x + t.vx * 0.6; I.ty = t.y + t.vy * 0.6;
 
   ai.strafeT -= dt;
-  if (ai.strafeT <= 0) { ai.strafe = Math.random() < 0.5 ? -1 : 1; ai.strafeT = rand(0.7, 1.8); ai.aimErr = rand(-0.12, 0.12); }
+  if (ai.strafeT <= 0) { ai.strafe = Math.random() < 0.5 ? -1 : 1; ai.strafeT = rand(0.7, 1.8); ai.aimErr = rand(-DF.aim, DF.aim); }
   ai.flee -= dt;
   if (f.hp < f.maxHp * 0.25 && ai.flee <= -3 && Math.random() < dt * 0.4) ai.flee = rand(1.5, 3);
 
@@ -572,27 +666,30 @@ function botIntent(f, dt) {
 
   // dodge or shield an arrow that is about to hit
   const threat = incomingArrow(f);
-  if (threat && Math.random() < dt * 7) {
-    if (f.cd.dash <= 0 && Math.random() < 0.6) {
+  if (threat && Math.random() < dt * DF.dodge) {
+    if (f.cd.dash <= 0 && Math.random() < DF.dashDodge) {
       const tx = -threat.vy, ty = threat.vx, s = Math.random() < 0.5 ? -1 : 1;
       I.mx = tx * s; I.my = ty * s; I.dash = true; return I;
     }
-    ai.block = rand(0.3, 0.6);
+    if (Math.random() < DF.block) ai.block = rand(0.3, 0.6);
   }
   ai.block -= dt;
   if (ai.block > 0) { I.block = true; I.aim = threat ? Math.atan2(-threat.vy, -threat.vx) : I.aim; return I; }
 
   if (f.ult >= 100 && d < 260) { I.ult = true; return I; }
   if (ai.flee <= 0) {
-    if (f.cd.s1 <= 0 && d < 420 && Math.random() < dt * 0.6) I.s1 = true;
-    if (f.cd.s2 <= 0 && d < 650 && Math.random() < dt * 0.5) I.s2 = true;
-    if (f.cd.s3 <= 0 && d < RAIN_RANGE && Math.random() < dt * 0.5) I.s3 = true;
-    if (f.cd.s4 <= 0 && d < 420 && Math.random() < dt * 0.5) I.s4 = true;
+    const sk = DF.skill;
+    if (f.cd.s1 <= 0 && d < 420 && Math.random() < dt * 0.6 * sk) I.s1 = true;
+    if (f.cd.s2 <= 0 && d < 650 && Math.random() < dt * 0.5 * sk) I.s2 = true;
+    if (f.cd.s3 <= 0 && d < RAIN_RANGE && Math.random() < dt * 0.5 * sk) I.s3 = true;
+    if (f.cd.s4 <= 0 && d < 420 && Math.random() < dt * 0.5 * sk) I.s4 = true;
   }
-  // bow: hold until the wanted charge, then let go
+  // bow: hold until the wanted charge, then let go and take a breather
   if (d < 750) {
-    if (f.drawing && f.draw >= ai.want) { I.m1 = false; ai.want = Math.random() < 0.45 ? 1 : rand(0.3, 0.8); }
-    else I.m1 = f.shotCd <= 0;
+    if (f.drawing && f.draw >= ai.want) {
+      I.m1 = false; ai.want = Math.random() < DF.full ? 1 : rand(0.3, 0.8); ai.wait = rand(...DF.wait);
+      ai.aimErr = rand(-DF.aim, DF.aim);
+    } else I.m1 = f.shotCd <= 0 && ai.wait <= 0;
   }
   return I;
 }
@@ -614,13 +711,56 @@ function lockPointer() {
 const pauseEl = document.getElementById('pause');
 function setPaused(on) {
   paused = on; pauseEl.style.display = on ? 'flex' : 'none';
-  if (on) { mouse.l = mouse.r = false; keys.clear(); }
+  if (on) {
+    mouse.l = mouse.r = false; keys.clear(); joy.id = null; btnTouches.clear();
+    if (isLocked()) document.exitPointerLock();   // a held mouse would send every click to the game, not the menu
+    buildPickers(document.getElementById('pausePickers'));
+  }
 }
 document.addEventListener('pointerlockchange', () => {
   if (isLocked()) { wasLocked = true; return; }
   if (running && !choosing && !touchMode && wasLocked) setPaused(true);   // Esc, alt-tab, etc.
 });
-pauseEl.addEventListener('click', () => { setPaused(false); pressed.clear(); lockPointer(); });
+document.getElementById('resume').addEventListener('click', () => { setPaused(false); pressed.clear(); lockPointer(); });
+
+// Arrow type and difficulty pickers, used on the start menu and the pause screen.
+function buildPickers(el) {
+  if (!el) return;
+  el.innerHTML = '';
+  const diffRow = document.createElement('div'); diffRow.className = 'seg';
+  for (const [id, d] of Object.entries(DIFFICULTY)) {
+    const b = document.createElement('button');
+    b.textContent = d.name; b.className = id === settings.difficulty ? 'on' : '';
+    b.addEventListener('click', () => {
+      settings.difficulty = id; saveSettings();
+      for (const f of fighters) if (f.isBot) f.ai.keep = rand(...D().keep);
+      refreshPickers();
+    });
+    diffRow.appendChild(b);
+  }
+  const lab1 = document.createElement('div'); lab1.className = 'plabel'; lab1.textContent = 'Bot difficulty';
+  const lab2 = document.createElement('div'); lab2.className = 'plabel'; lab2.textContent = 'Your arrows';
+  const grid = document.createElement('div'); grid.className = 'wgrid';
+  for (const id of WEAPON_IDS) {
+    const w = WEAPONS[id], b = document.createElement('button');
+    b.className = 'wcard' + (id === settings.weapon ? ' on' : '');
+    b.style.setProperty('--wc', w.col);
+    b.innerHTML = `<b>${w.name}</b><span>${w.desc}</span>`;
+    b.addEventListener('click', () => {
+      settings.weapon = id; saveSettings();
+      if (player) player.weapon = id;
+      refreshPickers();
+    });
+    grid.appendChild(b);
+  }
+  el.append(lab1, diffRow, lab2, grid);
+}
+function refreshPickers() {
+  buildPickers(document.getElementById('menuPickers'));
+  if (paused) buildPickers(document.getElementById('pausePickers'));
+}
+buildPickers(document.getElementById('menuPickers'));
+const pauseBtn = () => ({ x: W - 30, y: 30, r: 20 });
 
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
@@ -666,6 +806,8 @@ function touchButtons() {
 }
 function handleTouchStart(e) {
   e.preventDefault(); touchMode = true;
+  const pb = pauseBtn();
+  for (const t of e.changedTouches) if (running && Math.hypot(t.clientX - pb.x, t.clientY - pb.y) < pb.r + 12) { setPaused(true); return; }
   const btns = touchButtons();
   for (const t of e.changedTouches) {
     const hit = btns.find(b => Math.hypot(t.clientX - b.x, t.clientY - b.y) < b.r + 10);
@@ -819,7 +961,8 @@ function drawPickups() {
   }
 }
 
-const ARROW_COLS = { normal: '#e8d9b0', full: '#fff3c4', gold: '#ffc400', pierce: '#8fe3ff', blast: '#ff8a3d', rage: '#ff4d4d', ice: '#bfe9ff' };
+const ARROW_COLS = { normal: '#e8d9b0', full: '#fff3c4', gold: '#ffc400', pierce: '#8fe3ff', blast: '#ff8a3d', rage: '#ff4d4d', ice: '#bfe9ff',
+  classic: '#e8d9b0', fire: '#ff6a00', frost: '#9be7ff', poison: '#7bd85c', lightning: '#ffe95a' };
 function drawArrowShape(x, y, ang, kind, fletch, len = 28) {
   const c = Math.cos(ang), s = Math.sin(ang);
   const tx = x - c * len, ty = y - s * len;
@@ -875,6 +1018,9 @@ function drawFighter(f) {
   ctx.beginPath(); ctx.arc(bowX + bowR, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
   ctx.beginPath(); ctx.arc(tipX - pull, 0, 6.5, 0, TAU); ctx.fill(); ctx.stroke();
   if (f.flash > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r, 0, TAU); ctx.fillStyle = '#ffffffcc'; ctx.fill(); }
+  if (f.frozen > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r + 3, 0, TAU); ctx.fillStyle = '#bfe9ffaa'; ctx.fill(); ctx.strokeStyle = '#e6f8ff'; ctx.lineWidth = 2; ctx.stroke(); }
+  else if (f.slow > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r + 2, 0, TAU); ctx.strokeStyle = '#9be7ff88'; ctx.lineWidth = 2; ctx.stroke(); }
+  if (f.poison > 0) { ctx.beginPath(); ctx.arc(0, 0, f.r, 0, TAU); ctx.fillStyle = `rgba(123,216,92,${0.12 * f.poisonStacks})`; ctx.fill(); }
   if (f.blocking) {
     ctx.beginPath(); ctx.arc(0, 0, f.r + 14, -1.15, 1.15); ctx.strokeStyle = '#7ad7ff'; ctx.lineWidth = 6; ctx.stroke();
   }
@@ -928,6 +1074,16 @@ function drawWorld() {
   const order = [...fighters].sort((a, b) => (a.dead === b.dead ? a.y - b.y : a.dead ? -1 : 1));
   for (const f of order) drawFighter(f);
   for (const a of arrows) drawArrowShape(a.x, a.y, a.ang, a.kind, a.owner.color);
+  for (const b of bolts) {
+    ctx.globalAlpha = 1 - b.t / 0.18; ctx.strokeStyle = '#ffe95a'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(b.x1, b.y1);
+    for (let i = 1; i < 6; i++) {
+      const k = i / 6, j = (Math.random() - 0.5) * 22;
+      const nx = -(b.y2 - b.y1), ny = b.x2 - b.x1, nl = Math.hypot(nx, ny) || 1;
+      ctx.lineTo(b.x1 + (b.x2 - b.x1) * k + nx / nl * j, b.y1 + (b.y2 - b.y1) * k + ny / nl * j);
+    }
+    ctx.lineTo(b.x2, b.y2); ctx.stroke(); ctx.globalAlpha = 1;
+  }
   for (const p of particles) {
     if (p.ghost) continue;
     ctx.globalAlpha = 1 - p.t / p.life;
@@ -975,6 +1131,8 @@ function drawHud() {
   ctx.fillText(`HP ${Math.ceil(Math.max(0, player.hp))} / ${player.maxHp}`, bx + 4, by + 11);
   ctx.fillStyle = '#ffffff'; ctx.font = '800 9px system-ui, sans-serif';
   ctx.fillText(player.level >= MAX_LEVEL ? `LEVEL ${player.level} · MAX` : `LEVEL ${player.level} · ${player.xp} / ${xpNeed(player.level)} XP`, bx + 4, by + 38);
+  ctx.textAlign = 'right'; ctx.fillStyle = WEAPONS[player.weapon].col; ctx.font = '800 9px system-ui, sans-serif';
+  ctx.fillText(`${WEAPONS[player.weapon].name.toUpperCase()} ARROWS · ${D().name.toUpperCase()}`, bx + bw - 4, by + 38);
   ctx.textAlign = 'right'; ctx.fillStyle = '#fff'; ctx.font = '700 11px system-ui, sans-serif';
   ctx.fillText(player.awaken > 0 ? `STORM VOLLEY ${Math.ceil(player.awaken)}s` : player.ult >= 100 ? 'ULT READY' : '', bx + bw - 4, by + 11);
   const buffs = [];
@@ -1020,7 +1178,7 @@ function drawHud() {
 
   ctx.font = '700 13px system-ui, sans-serif';
   feed.forEach((e, i) => {
-    const y = (compact ? 60 : 22) + i * 22;
+    const y = (compact || touchMode ? 70 : 22) + i * 22;
     ctx.globalAlpha = Math.min(1, e.t);
     ctx.textAlign = 'right';
     const right = W - 12;
@@ -1093,6 +1251,10 @@ function drawSkillBar() {
 }
 
 function drawTouch() {
+  const pb = pauseBtn();
+  ctx.beginPath(); ctx.arc(pb.x, pb.y, pb.r, 0, TAU); ctx.fillStyle = '#00000088'; ctx.fill();
+  ctx.strokeStyle = '#ffffff55'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.fillRect(pb.x - 6, pb.y - 7, 4, 14); ctx.fillRect(pb.x + 2, pb.y - 7, 4, 14);
   if (joy.id !== null) {
     ctx.beginPath(); ctx.arc(joy.ox, joy.oy, 58, 0, TAU); ctx.fillStyle = '#ffffff14'; ctx.fill();
     ctx.strokeStyle = '#ffffff40'; ctx.lineWidth = 2; ctx.stroke();
@@ -1146,6 +1308,8 @@ function frame(now) {
       texts = texts.filter(t => t.t < t.life);
       for (const e of feed) e.t -= dt;
       feed = feed.filter(e => e.t > 0);
+      for (const b of bolts) b.t += dt;
+      bolts = bolts.filter(b => b.t < 0.18);
     }
     if (player.pendingChoices > 0 && !player.dead && hitStop <= 0) openChoice();
     // the camera leans toward the aim so you can see further ahead

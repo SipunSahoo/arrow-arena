@@ -21,15 +21,26 @@
   table { width:100%; border-collapse:collapse; font-size:14px; margin-bottom:18px; }
   td { padding:5px 4px; border-bottom:1px solid #232a37; }
   td:first-child { color:var(--accent); font-weight:600; white-space:nowrap; width:42%; }
-  button#play { width:100%; padding:14px; font-size:18px; font-weight:700; border:0; border-radius:12px;
+  button#play { margin-top:14px; width:100%; padding:14px; font-size:18px; font-weight:700; border:0; border-radius:12px;
     background:var(--accent); color:#1a1200; cursor:pointer; }
   @media (pointer:coarse) { .desk { display:none; } }
   .touchnote { color:var(--muted); font-size:13px; margin-top:12px; }
   .overlay { position:fixed; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column;
     background:#0d0f14cc; z-index:6; padding:16px; box-sizing:border-box; text-align:center; overflow-y:auto; touch-action:pan-y; }
-  #pause { cursor:pointer; }
-  #pause b { font-size:30px; letter-spacing:2px; }
-  #pause span { color:var(--muted); margin-top:8px; }
+  #pause .box { max-width:560px; width:100%; margin:auto; }
+  #pause b.title { font-size:28px; letter-spacing:2px; display:block; margin-bottom:6px; }
+  #resume { width:100%; padding:12px; font-size:17px; font-weight:800; border:0; border-radius:12px; background:var(--accent); color:#1a1200; cursor:pointer; margin-top:14px; }
+  .plabel { text-align:left; color:var(--muted); font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; margin:10px 0 6px; }
+  .seg { display:flex; gap:6px; }
+  .seg button { flex:1; padding:9px 0; border-radius:10px; border:2px solid #2a3140; background:#10141b; color:var(--text); font:inherit; font-weight:700; cursor:pointer; }
+  .seg button.on { border-color:var(--accent); color:var(--accent); }
+  .wgrid { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; }
+  .wcard { --wc:#fff; text-align:left; padding:8px 10px; border-radius:10px; border:2px solid #2a3140; background:#10141b; color:var(--text); font:inherit; cursor:pointer; display:flex; flex-direction:column; gap:3px; }
+  .wcard b { color:var(--wc); font-size:14px; }
+  .wcard span { font-size:11.5px; color:var(--muted); line-height:1.3; }
+  .wcard.on { border-color:var(--wc); background:#161c26; }
+  @media (max-width:420px) { .wgrid { grid-template-columns:repeat(2, 1fr); } }
+  @media (max-height:500px) { .wcard span { display:none; } .wcard { padding:6px 8px; } .seg button { padding:6px 0; } .plabel { margin:6px 0 4px; } #resume { padding:9px; margin-top:10px; } #pause b.title { font-size:20px; } }
   #lvtitle { font-size:28px; font-weight:800; color:#5eead4; letter-spacing:2px; }
   .lvsub { color:var(--muted); margin:4px 0 16px; font-size:14px; }
   #cards { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; max-width:760px; }
@@ -51,24 +62,30 @@
 <div id="menu">
   <div class="box">
     <h1>ARROW <span>ARENA</span></h1>
-    <p class="sub">Prototype 0.3 · bows, levels and upgrades · free-for-all against 6 bots · working title</p>
+    <p class="sub">Prototype 0.4 · six arrow types, levels and upgrades · free-for-all against 6 bots · working title</p>
+    <div id="menuPickers"></div>
+    <button id="play">PLAY</button>
+    <div class="plabel">How to play</div>
     <table>
       <tr class="desk"><td>W A S D</td><td>Move</td></tr>
       <tr class="desk"><td>Mouse</td><td>Aim</td></tr>
       <tr class="desk"><td>Left click (hold, let go)</td><td>Draw the bow and shoot. A full draw flies faster and hits harder</td></tr>
       <tr class="desk"><td>Right click / F (hold)</td><td>Shield. Blocks arrows from the front</td></tr>
       <tr class="desk"><td>Space</td><td>Dash. You cannot be hit mid-dash</td></tr>
-      <tr class="desk"><td>1 2 3 4</td><td>Triple Shot · Piercing Arrow (breaks shields) · Arrow Rain (at the mouse) · Blast Arrow</td></tr>
+      <tr class="desk"><td>1 2 3 4</td><td>Triple Shot · Piercing Arrow (breaks shields) · Arrow Rain (at the mouse) · Bomb Arrow</td></tr>
       <tr class="desk"><td>G</td><td>Storm Volley, when the gold bar is full</td></tr>
       <tr><td>XP dots</td><td>Walk over them to fill the XP bar. Each level lets you pick 1 of 3 upgrades</td></tr>
       <tr><td>Power-ups</td><td>Rage (double damage), Haste, Shield bubble, Heal</td></tr>
-      <tr class="desk"><td>Esc</td><td>Pause. The game holds your mouse while you play</td></tr>
+      <tr class="desk"><td>Esc</td><td>Pause, and change arrows or difficulty. The game holds your mouse while you play</td></tr>
     </table>
-    <button id="play">PLAY</button>
-    <p class="touchnote">On a phone or iPad: left thumb moves, buttons on the right fight. Hold SHOOT to draw, let go to fire. Aim is automatic.</p>
+    <p class="touchnote">On a phone or iPad: left thumb moves, buttons on the right fight. Hold SHOOT to draw, let go to fire. Aim is automatic. The pause button is top right.</p>
   </div>
 </div>
-<div id="pause" class="overlay"><b>PAUSED</b><span>Click anywhere to continue</span></div>
+<div id="pause" class="overlay"><div class="box">
+  <b class="title">PAUSED</b>
+  <div id="pausePickers"></div>
+  <button id="resume">RESUME</button>
+</div></div>
 <div id="levelup" class="overlay">
   <div id="lvtitle">LEVEL UP</div>
   <div class="lvsub">Pick one upgrade. Dying resets your level and upgrades.</div>
