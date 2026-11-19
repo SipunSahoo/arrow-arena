@@ -748,7 +748,7 @@ const pauseEl = document.getElementById('pause');
 function setPaused(on) {
   paused = on; pauseEl.style.display = on ? 'flex' : 'none';
   if (on) {
-    mouse.l = mouse.r = false; keys.clear(); joy.id = null; btnTouches.clear();
+    mouse.l = mouse.r = false; keys.clear(); joy.id = null; aimStick.id = null; aimStick.pendingT = 0; btnTouches.clear();
     if (isLocked()) document.exitPointerLock();   // a held mouse would send every click to the game, not the menu
     buildPickers(document.getElementById('pausePickers'));
   }
@@ -832,9 +832,18 @@ canvas.addEventListener('mousedown', e => {
 window.addEventListener('mouseup', e => { if (e.button === 0) mouse.l = false; if (e.button === 2) mouse.r = false; });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-// touch: left side joystick, right side buttons
+// Touch layout, by screen quarter:
+//   left half          = move stick (starts wherever the thumb lands)
+//   bottom-right quarter = aim-and-shoot stick (starts wherever the thumb lands: press, drag to aim, let go to fire)
+//   top-right quarter  = arrow panel, SWAP, pause, full screen
+// DASH and SHIELD sit inside the bottom-right quarter and win when touched directly.
+// Facing has one owner at a time: while the right thumb is down or the bow is drawn, only the aim drag turns you;
+// otherwise you face the way you walk.
 const joy = { id: null, ox: 0, oy: 0, x: 0, y: 0 };
-const aimStick = { id: null, ox: 0, oy: 0, x: 0, y: 0 };   // SHOOT doubles as the aim stick: press, drag to aim, let go to fire
+const aimStick = { id: null, ox: 0, oy: 0, x: 0, y: 0, lockAng: 0, pendingT: 0 };
+const AIM_DEADZONE = 18;
+const inShootZone = (x, y) => x >= W / 2 && y >= H / 2;
+const inMoveZone = x => x < W / 2;
 const btnTouches = new Map(); // touch id -> button id
 const btnPressed = new Set();
 function touchButtons() {
@@ -842,7 +851,6 @@ function touchButtons() {
   const cx = W - 128 * k, cy = H - 105 * k, R = 125 * k;
   const at = (deg, rad, rr) => ({ x: cx + Math.cos(deg * Math.PI / 180) * rad, y: cy + Math.sin(deg * Math.PI / 180) * rad, r: rr * k });
   return [
-    { id: 'm1', label: 'SHOOT', x: cx, y: cy, r: 56 * k },
     { id: 'dash', label: 'DASH', ...at(185, R + 4 * k, 36) },
     { id: 'block', label: 'SHIELD', ...at(245, R + 4 * k, 36) },
   ];
@@ -858,13 +866,14 @@ function handleTouchStart(e) {
     if (tx >= sr.x - 6 && tx <= sr.x + sr.w + 6 && ty >= sr.y - 6 && ty <= sr.y + sr.h + 6) { btnPressed.add('switch'); continue; }
     const wr = swapRect();
     if (swapCand && tx >= wr.x && tx <= wr.x + wr.w && ty >= wr.y - 4 && ty <= wr.y + wr.h + 4) { btnPressed.add('swap'); continue; }
-    const hit = btns.find(b => Math.hypot(tx - b.x, ty - b.y) < b.r + 10);
-    if (hit) {
-      btnTouches.set(t.identifier, hit.id); btnPressed.add(hit.id);
-      if (hit.id === 'm1') { aimStick.id = t.identifier; aimStick.ox = hit.x; aimStick.oy = hit.y; aimStick.x = tx; aimStick.y = ty; }
+    const hit = btns.find(b => Math.hypot(tx - b.x, ty - b.y) < b.r + 6);
+    if (hit) { btnTouches.set(t.identifier, hit.id); btnPressed.add(hit.id); continue; }
+    if (inShootZone(tx, ty) && aimStick.id === null) {
+      // the stick starts under the thumb, aiming where you already face, and a tap is never lost
+      Object.assign(aimStick, { id: t.identifier, ox: tx, oy: ty, x: tx, y: ty, lockAng: player ? player.face : 0, pendingT: 0.35 });
       continue;
     }
-    if (t.clientX < W * 0.55 && joy.id === null) { joy.id = t.identifier; joy.ox = joy.x = t.clientX; joy.oy = joy.y = t.clientY; }
+    if (inMoveZone(tx) && joy.id === null) { joy.id = t.identifier; joy.ox = joy.x = tx; joy.oy = joy.y = ty; }
   }
 }
 function handleTouchMove(e) {
@@ -888,18 +897,25 @@ canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
 canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
 const btnHeld = id => [...btnTouches.values()].includes(id);
 
-function playerIntent() {
+function playerIntent(dt) {
   const I = { mx: 0, my: 0, aim: player.face };
   if (touchMode) {
     if (joy.id !== null) {
       const dx = joy.x - joy.ox, dy = joy.y - joy.oy, m = Math.hypot(dx, dy);
       if (m > 8) { I.mx = dx / Math.max(m, 55); I.my = dy / Math.max(m, 55); }
     }
-    // no auto-aim: drag on SHOOT to aim; with no drag you shoot the way you are walking
-    const ax = aimStick.x - aimStick.ox, ay = aimStick.y - aimStick.oy;
-    if (aimStick.id !== null && Math.hypot(ax, ay) > 14) I.aim = Math.atan2(ay, ax);
+    // facing: the aim stick owns it while it is held or the bow is drawn; otherwise you face where you walk
+    const aiming = aimStick.id !== null;
+    if (aiming) {
+      const ax = aimStick.x - aimStick.ox, ay = aimStick.y - aimStick.oy;
+      if (Math.hypot(ax, ay) > AIM_DEADZONE) aimStick.lockAng = Math.atan2(ay, ax);
+      I.aim = aimStick.lockAng;
+    } else if (player.drawing) I.aim = aimStick.lockAng;   // the release frame: the shot keeps its aim
     else if (I.mx || I.my) I.aim = Math.atan2(I.my, I.mx);
-    I.m1 = btnHeld('m1'); I.block = btnHeld('block');
+    // hold to draw; a tap shorter than one frame still starts a draw, then the release fires it
+    if (aimStick.pendingT > 0) aimStick.pendingT = player.drawing ? 0 : aimStick.pendingT - dt;
+    I.m1 = aiming || aimStick.pendingT > 0;
+    I.block = btnHeld('block');
     if (btnPressed.has('dash')) I.dash = true;
     if (btnPressed.has('switch')) I.slotStep = 1;
     if (btnPressed.has('swap')) I.swap = true;
@@ -945,7 +961,7 @@ function openChoice() {
   }
   if (!cardChoices.length) { player.pendingChoices = 0; return; }
   choosing = true;
-  mouse.l = mouse.r = false; joy.id = null; btnTouches.clear();
+  mouse.l = mouse.r = false; joy.id = null; aimStick.id = null; aimStick.pendingT = 0; btnTouches.clear();
   if (isLocked()) document.exitPointerLock();
   document.getElementById('lvtitle').textContent = `LEVEL ${player.level - player.pendingChoices + 1}`;
   cardsEl.innerHTML = '';
@@ -1412,8 +1428,11 @@ function drawSwitchPanel() {
     ctx.fillStyle = s2 ? WEAPONS[s2.type].col : '#ffffff1f'; ctx.fillRect(cx, cy, cw, ch);
     if (i === player.cur) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(cx - 1.5, cy - 1.5, cw + 3, ch + 3); }
   }
-  ctx.fillStyle = '#9aa3b2'; ctx.font = `700 ${Math.round(8 * k + 1)}px system-ui, sans-serif`;
-  ctx.fillText(player.slots.length > 1 ? 'TAP TO SWITCH ⟳' : 'FIND MORE ARROWS', tx, r.y + r.h * 0.9);
+  const hint = player.slots.length > 1 ? 'TAP TO SWITCH ⟳' : 'FIND MORE ARROWS';
+  let hsz = Math.round(8 * k + 1);
+  ctx.font = `700 ${hsz}px system-ui, sans-serif`;
+  while (hsz > 6 && ctx.measureText(hint).width > r.x + r.w - tx - 8) { hsz--; ctx.font = `700 ${hsz}px system-ui, sans-serif`; }
+  ctx.fillStyle = '#9aa3b2'; ctx.fillText(hint, tx, r.y + r.h * 0.9);
 }
 
 function drawSwapPrompt() {
@@ -1465,34 +1484,40 @@ function drawTouch() {
     ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff40'; ctx.font = '600 13px system-ui, sans-serif';
     ctx.fillText('drag here to move', W * 0.22, H - 60);
   }
+  // aim-and-shoot stick: floats under the thumb anywhere in the bottom-right quarter
+  const k = clamp(Math.min(W, H) / 480, 0.62, 1), wcol = WEAPONS[player.weapon].col;
+  if (aimStick.id !== null) {
+    const R = 60 * k, ax = aimStick.x - aimStick.ox, ay = aimStick.y - aimStick.oy, m = Math.hypot(ax, ay), kk = m > R ? R / m : 1;
+    ctx.beginPath(); ctx.arc(aimStick.ox, aimStick.oy, R, 0, TAU); ctx.fillStyle = '#00000055'; ctx.fill();
+    ctx.strokeStyle = wcol; ctx.lineWidth = 3; ctx.stroke();
+    if (player.drawing) {
+      ctx.beginPath(); ctx.arc(aimStick.ox, aimStick.oy, R + 6, -Math.PI / 2, -Math.PI / 2 + TAU * player.draw);
+      ctx.strokeStyle = '#fff3c4'; ctx.lineWidth = 4; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(aimStick.ox + ax * kk, aimStick.oy + ay * kk, 24 * k, 0, TAU); ctx.fillStyle = wcol + 'aa'; ctx.fill();
+  } else {
+    // a resting hint where the right thumb usually lands
+    const hx = W - 128 * k, hy = H - 105 * k, r = 56 * k;
+    ctx.beginPath(); ctx.arc(hx, hy, r, 0, TAU); ctx.fillStyle = '#00000066'; ctx.fill();
+    ctx.strokeStyle = wcol + 'aa'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 12px system-ui, sans-serif'; ctx.fillText('SHOOT', hx, hy + 2);
+    ctx.fillStyle = '#9aa3b2'; ctx.font = '700 8px system-ui, sans-serif'; ctx.fillText('OR ANYWHERE HERE', hx, hy + 15);
+    ctx.fillStyle = '#ffffff30'; ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillText('press anywhere here, drag to aim, let go to shoot', W * 0.75, H / 2 + 22);
+  }
   for (const b of touchButtons()) {
     const frac = clamp(cdFraction(b.id), 0, 1);
     const held = btnHeld(b.id);
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU);
     ctx.fillStyle = held ? '#ffb02066' : '#00000088'; ctx.fill();
-    const wcol = WEAPONS[player.weapon].col;
-    ctx.lineWidth = 3; ctx.strokeStyle = b.id === 'm1' ? wcol : frac <= 0 ? '#ffb020aa' : '#3a4357'; ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = frac <= 0 ? '#ffb020aa' : '#3a4357'; ctx.stroke();
     if (frac > 0) {
       ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + TAU * frac);
       ctx.closePath(); ctx.fillStyle = '#ffffff22'; ctx.fill();
     }
-    if (b.id === 'm1' && aimStick.id !== null) {
-      const ax = aimStick.x - b.x, ay = aimStick.y - b.y, m = Math.hypot(ax, ay), lim = b.r * 0.7, kk = m > lim ? lim / m : 1;
-      ctx.beginPath(); ctx.arc(b.x + ax * kk, b.y + ay * kk, b.r * 0.38, 0, TAU); ctx.fillStyle = '#ffb02088'; ctx.fill();
-    }
-    if (b.id === 'm1' && player.drawing) {
-      ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 5, -Math.PI / 2, -Math.PI / 2 + TAU * player.draw);
-      ctx.strokeStyle = '#fff3c4'; ctx.lineWidth = 4; ctx.stroke();
-    }
-    ctx.textAlign = 'center';
-    if (b.id === 'm1') {
-      ctx.fillStyle = '#fff'; ctx.font = '800 12px system-ui, sans-serif'; ctx.fillText('SHOOT', b.x, b.y + 2);
-      ctx.fillStyle = '#9aa3b2'; ctx.font = '700 8px system-ui, sans-serif'; ctx.fillText('DRAG TO AIM', b.x, b.y + 15);
-    } else {
-      ctx.fillStyle = frac <= 0 ? '#fff' : '#8a93a3';
-      ctx.font = `800 ${b.label.length > 1 ? 11 : 16}px system-ui, sans-serif`;
-      ctx.fillText(b.label, b.x, b.y + 5);
-    }
+    ctx.textAlign = 'center'; ctx.fillStyle = frac <= 0 ? '#fff' : '#8a93a3';
+    ctx.font = `800 ${b.label.length > 1 ? 11 : 16}px system-ui, sans-serif`;
+    ctx.fillText(b.label, b.x, b.y + 5);
   }
 }
 
@@ -1506,7 +1531,7 @@ function frame(now) {
   if (running && !paused && !choosing) {
     if (hitStop > 0) hitStop -= dt;
     else {
-      const intents = fighters.map(f => (f === player ? playerIntent() : botIntent(f, dt)));
+      const intents = fighters.map(f => (f === player ? playerIntent(dt) : botIntent(f, dt)));
       pressed.clear(); btnPressed.clear();
       fighters.forEach((f, i) => updateFighter(f, dt, intents[i]));
       separate();
