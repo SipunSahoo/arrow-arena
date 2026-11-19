@@ -37,6 +37,7 @@
     background:#0d0f14cc; z-index:6; padding:16px; box-sizing:border-box; text-align:center; overflow-y:auto; touch-action:pan-y; }
   #pause .box { max-width:560px; width:100%; margin:auto; }
   #pause b.title { font-size:28px; letter-spacing:2px; display:block; margin-bottom:6px; }
+  .editbtn { width:100%; padding:10px; margin-top:12px; font:inherit; font-weight:800; border-radius:10px; border:2px solid var(--accent); background:transparent; color:var(--accent); cursor:pointer; }
   #resume { width:100%; padding:12px; font-size:17px; font-weight:800; border:0; border-radius:12px; background:var(--accent); color:#1a1200; cursor:pointer; margin-top:14px; }
   .plabel { text-align:left; color:var(--muted); font-size:12px; font-weight:700; letter-spacing:1px; text-transform:uppercase; margin:10px 0 6px; }
   .seg { display:flex; gap:6px; }
@@ -74,7 +75,7 @@
 <div id="menu">
   <div class="box">
     <h1>ARROW <span>ARENA</span></h1>
-    <p class="sub">Prototype 0.8.1 · start with Classic, find stronger arrows, carry three · free-for-all against 6 bots · working title</p>
+    <p class="sub">Prototype 0.9 · start with Classic, find stronger arrows, carry three · free-for-all against 6 bots · working title</p>
     <div id="menuPickers"></div>
     <button id="play">PLAY</button>
     <div class="plabel">How to play</div>
@@ -107,6 +108,6 @@
   <div id="cards"></div>
 </div>
 <script>if (/iPhone|iPod/.test(navigator.userAgent) && !navigator.standalone) document.getElementById("iosTip").style.display = "block";</script>
-<script src="game.js?v=0.8.1"></script>
+<script src="game.js?v=0.9"></script>
 </body>
 </html>

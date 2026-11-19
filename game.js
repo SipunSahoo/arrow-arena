@@ -124,10 +124,19 @@ const DIFFICULTY = {
   normal: { name: 'Normal', aim: 0.2, lead: 0.55, dodge: 3.5, dashDodge: 0.5, block: 0.8, skill: 0.6, wait: [0.15, 0.5], full: 0.35, dmg: 0.85, playerBias: 1.25, keep: [260, 380] },
   hard: { name: 'Hard', aim: 0.12, lead: 0.8, dodge: 7, dashDodge: 0.6, block: 1, skill: 1, wait: [0, 0.12], full: 0.45, dmg: 1, playerBias: 1, keep: [240, 340] },
 };
-const settings = { difficulty: 'easy' };
+const UI_SIZES = { s: { name: 'Small', m: 0.88 }, m: { name: 'Medium', m: 1 }, l: { name: 'Large', m: 1.14 } };
+const VIEWS = { near: { name: 'Near', m: 1.12 }, normal: { name: 'Normal', m: 1 }, far: { name: 'Far', m: 0.88 } };
+const settings = { difficulty: 'easy', uiSize: 'm', view: 'normal', layout: {} };
 try {
   const saved = JSON.parse(localStorage.getItem('arrowArena.settings') || '{}');
   if (DIFFICULTY[saved.difficulty]) settings.difficulty = saved.difficulty;
+  if (UI_SIZES[saved.uiSize]) settings.uiSize = saved.uiSize;
+  if (VIEWS[saved.view]) settings.view = saved.view;
+  if (saved.layout && typeof saved.layout === 'object') {
+    for (const [id, o] of Object.entries(saved.layout)) {
+      if (['m1', 'dash', 'block', 'panel'].includes(id) && o && isFinite(o.x) && isFinite(o.y) && isFinite(o.s)) settings.layout[id] = { x: clamp(o.x, 0, 1), y: clamp(o.y, 0, 1), s: clamp(o.s, 0.6, 1.6) };
+    }
+  }
 } catch (e) { /* storage blocked: defaults are fine */ }
 function saveSettings() { try { localStorage.setItem('arrowArena.settings', JSON.stringify(settings)); } catch (e) { /* ignore */ } }
 const D = () => DIFFICULTY[settings.difficulty];
@@ -143,16 +152,19 @@ function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 3);
   const cw = window.innerWidth, chh = window.innerHeight, m = Math.min(cw, chh);
   PHONE = m < 500 && window.matchMedia('(pointer: coarse)').matches;
-  UIS = PHONE ? clamp(m / 285, 1.05, 1.35) : 1;
+  const COARSE = window.matchMedia('(pointer: coarse)').matches, sizeM = UI_SIZES[settings.uiSize].m;
+  UIS = PHONE ? clamp(m / 330, 1, 1.15) * sizeM : COARSE ? sizeM : 1;
   W = cw / UIS; H = chh / UIS;
   canvas.width = Math.round(cw * DPR); canvas.height = Math.round(chh * DPR);
   canvas.style.width = cw + 'px'; canvas.style.height = chh + 'px';
   // phones also zoom the arena in: archers were half size before
-  VIEW = PHONE ? clamp(Math.min(W, H) / 420, 0.66, 1) : clamp(Math.min(W, H) / 820, 0.5, 1.05);
+  VIEW = (PHONE ? clamp(Math.min(W, H) / 470, 0.6, 1) : clamp(Math.min(W, H) / 820, 0.5, 1.05)) * VIEWS[settings.view].m;
   VS = VIEW * zoom;
 }
 // size factor for the touch controls (in game units)
-const touchK = () => clamp(Math.min(W, H) / 400, 0.8, 1.1);
+const touchK = () => clamp(Math.min(W, H) / 420, 0.75, 1.05);
+// a control the player has moved in the button editor: centre as a fraction of the screen, and a size factor
+const placed = id => settings.layout[id] || null;
 window.addEventListener('resize', resize);
 resize();
 
@@ -875,6 +887,79 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.getElementById('resume').addEventListener('click', () => { setPaused(false); pressed.clear(); lockPointer(); });
 
+// ---------- button editor: drag SHOOT, DASH, SHIELD and the arrow panel; resize the selected one ----------
+let editing = false, editSel = 'm1';
+const editDrag = { id: null, dx: 0, dy: 0 };
+const EDIT_IDS = ['m1', 'dash', 'block', 'panel'];
+const EDIT_NAMES = { m1: 'SHOOT', dash: 'DASH', block: 'SHIELD', panel: 'ARROW PANEL' };
+function controlBox(id) {   // centre and hit size of an editable control
+  if (id === 'panel') { const r = switchRect(); return { x: r.x + r.w / 2, y: r.y + r.h / 2, hw: r.w / 2, hh: r.h / 2 }; }
+  const c = id === 'm1' ? shootSpot() : touchButtons().find(b => b.id === id);
+  return { x: c.x, y: c.y, hw: c.r, hh: c.r };
+}
+function editBar() {   // the editor's own buttons, in the middle of the screen where no control sits by default
+  const bw = 66, bh = 38, gap = 8, items = ['−', '+', 'RESET', 'DONE'], ws = items.map(t => (t.length > 1 ? bw + 10 : bh + 6));
+  const total = ws.reduce((a, b) => a + b, 0) + gap * (items.length - 1);
+  let x = W / 2 - total / 2; const y = H * 0.38;
+  return items.map((t, i) => { const r = { t, x, y, w: ws[i], h: bh }; x += ws[i] + gap; return r; });
+}
+function startEditing() { editing = true; editSel = 'm1'; pauseEl.style.display = 'none'; }
+function stopEditing() { editing = false; editDrag.id = null; saveSettings(); setPaused(true); }
+function editTouchStart(t) {
+  const x = t.clientX, y = t.clientY;
+  const bar = editBar().find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  if (bar) {
+    const cur = placed(editSel), box = controlBox(editSel), s0 = cur ? cur.s : 1;
+    if (bar.t === '−' || bar.t === '+') settings.layout[editSel] = { x: box.x / W, y: box.y / H, s: clamp(s0 + (bar.t === '+' ? 0.1 : -0.1), 0.6, 1.6) };
+    if (bar.t === 'RESET') settings.layout = {};
+    if (bar.t === 'DONE') stopEditing();
+    return;
+  }
+  // the topmost control under the finger (the panel, then the buttons, then SHOOT, which is the biggest)
+  for (const id of ['panel', 'dash', 'block', 'm1']) {
+    const b = controlBox(id);
+    if (Math.abs(x - b.x) <= b.hw + 6 && Math.abs(y - b.y) <= b.hh + 6) { editSel = id; Object.assign(editDrag, { id: t.identifier, dx: b.x - x, dy: b.y - y }); return; }
+  }
+}
+function editTouchMove(t) {
+  if (t.identifier !== editDrag.id) return;
+  const b = controlBox(editSel), cur = placed(editSel);
+  const cx = clamp(t.clientX + editDrag.dx, b.hw, W - b.hw), cy = clamp(t.clientY + editDrag.dy, b.hh, H - b.hh);
+  settings.layout[editSel] = { x: cx / W, y: cy / H, s: cur ? cur.s : 1 };
+}
+function drawEditor() {
+  ctx.fillStyle = '#00000066'; ctx.fillRect(0, 0, W, H);
+  // the real controls are drawn by drawTouch; outline each and name it
+  // controls that overlap each other are outlined in red
+  const boxes = EDIT_IDS.map(id => ({ id, ...controlBox(id) }));
+  const clash = new Set();
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const a = boxes[i], c = boxes[j];
+    if (Math.abs(a.x - c.x) < a.hw + c.hw && Math.abs(a.y - c.y) < a.hh + c.hh) { clash.add(a.id); clash.add(c.id); }
+  }
+  for (const id of EDIT_IDS) {
+    const b = controlBox(id), on = id === editSel;
+    ctx.setLineDash(on ? [] : [6, 5]); ctx.lineWidth = on ? 3 : 2; ctx.strokeStyle = clash.has(id) ? '#ff5a5a' : on ? '#ffb020' : '#ffffffaa';
+    if (id === 'panel') { ctx.strokeRect(b.x - b.hw - 4, b.y - b.hh - 4, b.hw * 2 + 8, b.hh * 2 + 8); }
+    else { ctx.beginPath(); ctx.arc(b.x, b.y, b.hw + 5, 0, TAU); ctx.stroke(); }
+    ctx.setLineDash([]);
+    ctx.textAlign = 'center'; ctx.fillStyle = on ? '#ffb020' : '#ffffff'; ctx.font = '800 10px system-ui, sans-serif';
+    ctx.fillText(EDIT_NAMES[id], b.x, b.y + b.hh + 18 > H - 4 ? b.y - b.hh - 10 : b.y + b.hh + 18);
+  }
+  ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 14px system-ui, sans-serif';
+  ctx.fillText('EDIT BUTTONS · drag a control to move it', W / 2, H * 0.38 - 30);
+  const sel = placed(editSel);
+  ctx.fillStyle = '#ffb020'; ctx.font = '700 12px system-ui, sans-serif';
+  ctx.fillText(`${EDIT_NAMES[editSel]} · size ${Math.round((sel ? sel.s : 1) * 100)}%`, W / 2, H * 0.38 - 12);
+  if (clash.size) { ctx.fillStyle = '#ff5a5a'; ctx.fillText('red = controls overlapping: a press there hits only one of them', W / 2, H * 0.38 + 58); }
+  for (const b of editBar()) {
+    ctx.fillStyle = b.t === 'DONE' ? '#ffb020' : '#161a22ee'; roundRect(b.x, b.y, b.w, b.h, 9); ctx.fill();
+    ctx.strokeStyle = '#ffb020'; ctx.lineWidth = 2; roundRect(b.x, b.y, b.w, b.h, 9); ctx.stroke();
+    ctx.fillStyle = b.t === 'DONE' ? '#1a1200' : '#fff'; ctx.font = `800 ${b.t.length > 1 ? 13 : 20}px system-ui, sans-serif`;
+    ctx.fillText(b.t, b.x + b.w / 2, b.y + b.h / 2 + (b.t.length > 1 ? 5 : 7));
+  }
+}
+
 // Arrow type and difficulty pickers, used on the start menu and the pause screen.
 function buildPickers(el) {
   if (!el) return;
@@ -892,6 +977,24 @@ function buildPickers(el) {
   }
   const lab1 = document.createElement('div'); lab1.className = 'plabel'; lab1.textContent = 'Bot difficulty';
   el.append(lab1, diffRow);
+  const segRow = (label, opts, key) => {
+    const lab = document.createElement('div'); lab.className = 'plabel'; lab.textContent = label;
+    const row = document.createElement('div'); row.className = 'seg';
+    for (const [id, o] of Object.entries(opts)) {
+      const b = document.createElement('button'); b.textContent = o.name; b.className = id === settings[key] ? 'on' : '';
+      b.addEventListener('click', () => { settings[key] = id; saveSettings(); resize(); refreshPickers(); });
+      row.appendChild(b);
+    }
+    el.append(lab, row);
+  };
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+  if (coarse) segRow('Button and text size', UI_SIZES, 'uiSize');
+  segRow('View distance', VIEWS, 'view');
+  if (coarse && el.id === 'pausePickers') {
+    const b = document.createElement('button'); b.className = 'editbtn'; b.textContent = 'EDIT BUTTON LAYOUT';
+    b.addEventListener('click', startEditing);
+    el.append(b);
+  }
 }
 function refreshPickers() {
   buildPickers(document.getElementById('menuPickers'));
@@ -899,9 +1002,15 @@ function refreshPickers() {
 }
 buildPickers(document.getElementById('menuPickers'));
 // top-right controls on phones and tablets
-function switchRect() {
+function defaultSwitchRect() {
   const k = touchK(), w = 196 * k, h = 60 * k;
   return { x: W - 12 - w, y: 10, w, h, k };
+}
+function switchRect() {
+  const d = defaultSwitchRect(), o = placed('panel');
+  if (!o) return d;
+  const w = d.w * o.s, h = d.h * o.s;
+  return { x: clamp(o.x * W - w / 2, 0, W - w), y: clamp(o.y * H - h / 2, 0, H - h), w, h, k: d.k * o.s };
 }
 // SWAP sits under the arrow panel; on screens too short for that (it would cover SHIELD) it moves to the top centre
 function swapRect() {
@@ -912,8 +1021,8 @@ function swapRect() {
   const left = 20 + Math.min(300, W * 0.34), right = r.x - 108;
   return { ...rect, x: left + Math.max(0, (right - left - rect.w) / 2), y: 10, w: Math.min(rect.w, right - left) };
 }
-const pauseBtn = () => { const r = switchRect(); return { x: r.x - 30, y: r.y + r.h / 2, r: 20 }; };
-const fsBtn = () => { const r = switchRect(); return { x: r.x - 78, y: r.y + r.h / 2, r: 20 }; };
+const pauseBtn = () => { const r = defaultSwitchRect(); return { x: r.x - 30, y: r.y + r.h / 2, r: 20 }; };
+const fsBtn = () => { const r = defaultSwitchRect(); return { x: r.x - 78, y: r.y + r.h / 2, r: 20 }; };
 
 // Full screen (Android and iPad; iPhone Safari only allows it from the home-screen icon)
 const fsEl = document.documentElement;
@@ -943,7 +1052,7 @@ window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 canvas.addEventListener('wheel', e => { e.preventDefault(); if (running && !paused && !choosing) pressed.add(e.deltaY > 0 ? 'wheeldown' : 'wheelup'); }, { passive: false });
 window.addEventListener('blur', () => { keys.clear(); mouse.l = mouse.r = false; });
 document.addEventListener('pointermove', e => {
-  if (e.pointerType !== 'mouse') return;
+  if (e.pointerType !== 'mouse' || PHONE) return;   // a phone never switches to mouse mode
   touchMode = false;
   if (isLocked()) { mouse.x = clamp(mouse.x + e.movementX, 0, W); mouse.y = clamp(mouse.y + e.movementY, 0, H); }
   else { mouse.x = e.clientX / UIS; mouse.y = e.clientY / UIS; }
@@ -970,7 +1079,7 @@ const aimStick = { id: null, ox: 0, oy: 0, x: 0, y: 0, lockAng: 0, pendingT: 0 }
 const AIM_DEADZONE = 18;
 const cardTouch = { id: null, idx: -1, sx: 0, sy: 0 };   // a thumb that landed on a level-up card
 let aimedOnce = false;   // the shoot-zone hint goes away after the first aim
-const inShootZone = (x, y) => x >= W / 2 && y >= H / 2;
+const inShootZone = (x, y) => { const sp = shootSpot(); return (x >= W / 2 && y >= H / 2) || Math.hypot(x - sp.x, y - sp.y) < sp.r * 1.6; };
 const inMoveZone = x => x < W / 2;
 const btnTouches = new Map(); // touch id -> button id
 const btnPressed = new Set();
@@ -981,12 +1090,18 @@ function touchButtons() {
   return [
     { id: 'dash', label: 'DASH', ...at(175, R + 4 * k, 36) },
     { id: 'block', label: 'SHIELD', ...at(222, R + 4 * k, 36) },
-  ];
+  ].map(b => { const o = placed(b.id); return o ? { ...b, x: o.x * W, y: o.y * H, r: b.r * o.s } : b; });
+}
+// where the SHOOT circle rests (the whole bottom-right quarter still shoots, and so does the area around this circle)
+function shootSpot() {
+  const k = touchK(), o = placed('m1'), d = { x: W - 128 * k, y: H - 105 * k, r: 56 * k };
+  return o ? { x: o.x * W, y: o.y * H, r: d.r * o.s } : d;
 }
 // touches in game units (screen pixels / UIS)
 const scaledTouches = e => [...e.changedTouches].map(t => ({ identifier: t.identifier, clientX: t.clientX / UIS, clientY: t.clientY / UIS }));
 function handleTouchStart(e) {
   e.preventDefault(); touchMode = true;
+  if (editing) { for (const t of scaledTouches(e)) editTouchStart(t); return; }
   const pb = pauseBtn(), fb = fsBtn(), sr = switchRect();
   const btns = touchButtons();
   for (const t of scaledTouches(e)) {
@@ -1010,6 +1125,7 @@ function handleTouchStart(e) {
 }
 function handleTouchMove(e) {
   e.preventDefault();
+  if (editing) { for (const t of scaledTouches(e)) editTouchMove(t); return; }
   for (const t of scaledTouches(e)) {
     if (t.identifier === cardTouch.id && Math.hypot(t.clientX - cardTouch.sx, t.clientY - cardTouch.sy) > 14) {
       // it was a drag, not a tap: hand the thumb to the stick for the zone it started in
@@ -1023,6 +1139,7 @@ function handleTouchMove(e) {
 }
 function handleTouchEnd(e) {
   e.preventDefault();
+  if (editing) { for (const t of scaledTouches(e)) if (t.identifier === editDrag.id) editDrag.id = null; return; }
   for (const t of scaledTouches(e)) {
     if (t.identifier === cardTouch.id) { if (offerHit(t.clientX, t.clientY) === cardTouch.idx) pickOffer(cardTouch.idx); cardTouch.id = null; }
     if (t.identifier === joy.id) joy.id = null;
@@ -1117,9 +1234,10 @@ function offerLayout() {
   const n = offer.cards.length, gap = 8;
   let w, x0, y0, ch;
   if (touchMode) {
-    const dash = touchButtons().find(b => b.id === 'dash');
-    // a drag that starts on a card becomes the move stick, so the strip may sit over the move zone
-    const left = 12, right = Math.min(dash.x - dash.r - 10, W - 12);
+    // a drag that starts on a card becomes the move stick, so the strip may sit over the move zone;
+    // it ends before the first control (DASH, SHIELD, SHOOT) that reaches down into its band
+    const band = H - 52, blockers = [...touchButtons(), shootSpot()].filter(c => c.y + c.r > band && c.x > W * 0.3);
+    const left = 12, right = Math.min(W - 12, ...blockers.map(c => c.x - c.r - 10));
     w = Math.min(460, right - left); x0 = left + (right - left - w) / 2; ch = 42; y0 = H - ch - 10;
   } else {
     w = Math.min(620, W - 360); x0 = (W - w) / 2; ch = 60; y0 = H - 104 - ch;
@@ -1563,8 +1681,9 @@ function drawHud() {
   drawSwapPrompt();
   drawOffer();
   drawBountyHud();
-  if (touchMode) drawTouch();
+  if (touchMode || editing) drawTouch();
   else drawArrowBar();
+  if (editing) drawEditor();
 
   if (player.dead) {
     ctx.fillStyle = '#000000aa'; ctx.fillRect(0, H / 2 - 40, W, 80);
@@ -1739,7 +1858,7 @@ function drawTouch() {
     ctx.beginPath(); ctx.arc(aimStick.ox + ax * kk, aimStick.oy + ay * kk, 24 * k, 0, TAU); ctx.fillStyle = wcol + 'aa'; ctx.fill();
   } else {
     // a resting hint where the right thumb usually lands
-    const hx = W - 128 * k, hy = H - 105 * k, r = 56 * k;
+    const sp = shootSpot(), hx = sp.x, hy = sp.y, r = sp.r;
     ctx.beginPath(); ctx.arc(hx, hy, r, 0, TAU); ctx.fillStyle = '#00000066'; ctx.fill();
     ctx.strokeStyle = wcol + 'aa'; ctx.lineWidth = 3; ctx.stroke();
     ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; ctx.font = '800 12px system-ui, sans-serif'; ctx.fillText('SHOOT', hx, hy + 2);
