@@ -1,6 +1,6 @@
-# Arrow Arena (working title): prototype 0.2
+# Arrow Arena (working title): prototype 0.3
 
-Top-down free-for-all archery brawler (bows only), in the style of arrow .io games.
+Top-down free-for-all archery brawler (bows only), in the style of arrow .io games, with XP dots, levels, upgrade choices and power-ups.
 All characters, names and moves are original.
 
 Play: open `index.html` in Chrome (double-click). No install, no server.
