@@ -2,8 +2,14 @@
 // Online play. The shared server runs the arena; this file sends your controls and draws what the server sends back.
 // Your own archer's movement is predicted here so it answers at once; everyone else is smoothed between pictures.
 
-// Where the server lives. Filled in once it is hosted; ?server=ws://... overrides it for testing.
-const SERVER_URL = new URLSearchParams(location.search).get('server') || '';
+// Where the server lives. ?server=ws://... overrides it for testing.
+// Opened from the game server's own address: talk to that same server.
+// Opened from GitHub Pages or as a file: talk to the hosted server on Render.
+const HOSTED_SERVER = 'wss://arrow-arena.onrender.com';
+const SERVER_URL = new URLSearchParams(location.search).get('server')
+  || (/^https?:$/.test(location.protocol) && !/github\.io$/.test(location.hostname)
+    ? (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+    : HOSTED_SERVER);
 
 function netConnect(profile, onReady, onFail) {
   let ws, myId = null, ready = false;

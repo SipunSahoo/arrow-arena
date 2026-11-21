@@ -1,12 +1,14 @@
-# Render.com setup for the shared game server (free plan; Singapore is the closest region to India).
-# The website itself stays on GitHub Pages; this runs only server/index.js.
+# Render.com: the Arrow Arena game server (free plan; Singapore is the closest region to India).
+# One service serves the game page AND runs the shared arena, so the only thing to share is its address:
+#   https://arrow-arena.onrender.com
+# The GitHub Pages copy (sipunsahoo.github.io/arrow-arena) connects to this same server for online play.
+# Free plan note: it sleeps after 15 minutes with nobody connected; the first visit then takes about a minute.
 services:
   - type: web
     name: arrow-arena
     runtime: node
     plan: free
     region: singapore
-    rootDir: server
-    buildCommand: npm install
-    startCommand: node index.js
-    healthCheckPath: /
+    buildCommand: npm ci --omit=dev --prefix server
+    startCommand: node server/index.js
+    healthCheckPath: /health

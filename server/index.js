@@ -46,9 +46,23 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, 'room.js'), 'utf8'), sandbo
 const ROOM = sandbox.ROOM;
 
 // ---------- network ----------
+// The server also hands out the game page itself, so one address is all a friend needs.
+// Only these files are served; nothing else in the folder can be fetched.
+const WEB_DIR = path.dirname(gamePath);
+const FILES = {
+  '/index.html': 'text/html; charset=utf-8', '/game.js': 'text/javascript; charset=utf-8', '/net.js': 'text/javascript; charset=utf-8',
+  '/home.js': 'text/javascript; charset=utf-8', '/manifest.webmanifest': 'application/manifest+json', '/icon-192.png': 'image/png', '/icon-512.png': 'image/png',
+};
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { 'content-type': 'text/plain' });
-  res.end(`Arrow Arena server · ${ROOM.humans()} playing\n`);
+  const url = (req.url || '/').split('?')[0];
+  if (url === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(`ok ${ROOM.humans()} playing\n`); return; }
+  const file = url === '/' ? '/index.html' : url;
+  if (!FILES[file]) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found\n'); return; }
+  fs.readFile(path.join(WEB_DIR, file), (err, buf) => {
+    if (err) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('Not found\n'); return; }
+    res.writeHead(200, { 'content-type': FILES[file], 'cache-control': 'no-cache' });
+    res.end(buf);
+  });
 });
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const clients = new Map();   // socket -> { id, msgs, windowStart }

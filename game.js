@@ -1661,7 +1661,8 @@ function drawHud() {
   ctx.fillStyle = '#ffffff'; ctx.font = '800 9px system-ui, sans-serif';
   ctx.fillText(player.level >= MAX_LEVEL ? `LEVEL ${player.level} · MAX` : `LEVEL ${player.level} · ${player.xp} / ${xpNeed(player.level)} XP`, bx + 4, by + 27);
   ctx.textAlign = 'right'; ctx.fillStyle = WEAPONS[player.weapon].col; ctx.font = '800 9px system-ui, sans-serif';
-  ctx.fillText(touchMode ? D().name.toUpperCase() : `${WEAPONS[player.weapon].name.toUpperCase()} ${ROMAN[player.tier]} · ${D().name.toUpperCase()}`, bx + bw - 4, by + 27);
+  const modeTag = typeof net !== "undefined" && net ? "ONLINE" : D().name.toUpperCase();
+  ctx.fillText(touchMode ? modeTag : `${WEAPONS[player.weapon].name.toUpperCase()} ${ROMAN[player.tier]} · ${modeTag}`, bx + bw - 4, by + 27);
   ctx.textAlign = 'right'; ctx.fillStyle = '#ffc400'; ctx.font = '700 11px system-ui, sans-serif';
   if (player.awaken > 0) ctx.fillText(`VOLLEY ${Math.ceil(player.awaken)}s`, bx + bw - 4, by + 11);
   const buffs = [];
